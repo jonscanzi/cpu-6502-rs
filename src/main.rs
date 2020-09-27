@@ -1,12 +1,23 @@
-// type word = u8;
-// type doubleword = u16;
+#![allow(dead_code)]
 
 use std::ops::Add;
 use std::ops::Sub;
+use std::ops::BitOr;
+use std::ops::BitAnd;
+use std::ops::BitXor;
 
-/// Reperesents a word in 6502 (i.e. a single byte)
+/// Trait reperesenting a carry-less (CL) addition
+/// Carry-less means that it must over- or under-flow silently
+trait CLAdd<O: Sized>: Sized {
+    type Output;
+
+    fn cl_add(self, other: O) -> Self::Output;
+}
+
+/// Reperesents a word in 6502 (i.e. a single byte).
 /// Currently stored in native endianness
 #[derive(Clone, Copy)]
+#[allow(non_camel_case_types)]
 struct word {
     value: u8,
 }
@@ -38,15 +49,28 @@ impl word {
         i8::to_le(self.value as i8)
     }
 
+    #[inline]
     fn zero() -> Self {
         Self {
             value: 0,
         }
     }
 
+    #[inline]
     fn as_doubleword(&self) -> doubleword {
         doubleword {
             value: self.value as u16
+        }
+    }
+}
+
+impl CLAdd<Self> for word {
+    type Output = Self;
+
+    #[inline]
+    fn cl_add(self, other: Self) -> Self {
+        Self {
+            value: self.value.wrapping_add(other.value),
         }
     }
 }
@@ -81,9 +105,80 @@ impl Sub<u8> for word {
     }
 }
 
+impl Sub<word> for word {
+    type Output = Self;
+
+    fn sub(self, other: word) -> Self {
+        Self {
+            value: self.value - other.value, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitOr<word> for word {
+    type Output = Self;
+
+    fn bitor(self, other: word) -> Self {
+        Self {
+            value: self.value | other.value, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitOr<u8> for word {
+    type Output = Self;
+
+    fn bitor(self, other: u8) -> Self {
+        Self {
+            value: self.value | other, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitAnd<word> for word {
+    type Output = Self;
+
+    fn bitand(self, other: word) -> Self {
+        Self {
+            value: self.value & other.value, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitAnd<u8> for word {
+    type Output = Self;
+
+    fn bitand(self, other: u8) -> Self {
+        Self {
+            value: self.value & other, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitXor<word> for word {
+    type Output = Self;
+
+    fn bitxor(self, other: word) -> Self {
+        Self {
+            value: self.value ^ other.value, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
+impl BitXor<u8> for word {
+    type Output = Self;
+
+    fn bitxor(self, other: u8) -> Self {
+        Self {
+            value: self.value ^ other, // No need to worry about endianness for a single byte
+        }
+    }
+}
+
 /// Represents a doubleword in 6502 (used for addressing and the PC)
 /// Currently stored in native endianness
 #[derive(Clone, Copy)]
+#[allow(non_camel_case_types)]
 struct doubleword {
     value: u16,
 }
@@ -124,6 +219,28 @@ impl doubleword {
     fn zero() -> Self {
         Self {
             value: 0,
+        }
+    }
+}
+
+impl CLAdd<Self> for doubleword {
+    type Output = Self;
+
+    #[inline]
+    fn cl_add(self, other: Self) -> Self {
+        Self {
+            value: self.value.wrapping_add(other.value),
+        }
+    }
+}
+
+impl CLAdd<word> for doubleword {
+    type Output = Self;
+
+    #[inline]
+    fn cl_add(self, other: word) -> Self {
+        Self {
+            value: self.value.wrapping_add(other.value as u16),
         }
     }
 }
@@ -173,14 +290,13 @@ impl Add<i16> for doubleword {
     }
 }
 
-
 const RAM_SIZE_BYTES: usize = 1024;
 
-struct ram {
+struct Ram {
     data: [word; RAM_SIZE_BYTES],
 }
 
-impl ram {
+impl Ram {
 
     fn write(&mut self, address: doubleword, data: word) {
         let address: u16 = address.native_value();
@@ -194,7 +310,7 @@ impl ram {
     }
 }
 
-struct cartridge {
+struct Cartridge {
     program: [word; 1024*1024],
 }
 
@@ -203,14 +319,12 @@ enum MemoryAccessType {
     Load,
 }
 
-struct memory {
-    internal_ram: ram,
-    cart: cartridge,
-
-
+struct Memory {
+    internal_ram: Ram,
+    cart: Cartridge,
 }
 
-impl memory {
+impl Memory {
     pub fn store(&self, address: doubleword, data: word) {
         let test_val = self.access(address, MemoryAccessType::Store, Some(data));
         debug_assert!(test_val.is_none());
@@ -220,7 +334,7 @@ impl memory {
         self.access(address, MemoryAccessType::Load, None).unwrap()
     }
 
-    fn access(&self, address: doubleword, tpe: MemoryAccessType, data: Option<word>) -> Option<word> {
+    fn access(&self, address: doubleword, _tpe: MemoryAccessType, _data: Option<word>) -> Option<word> {
         match address.native_value() {
             0x0000..=0x1FFF => (), // RAM (repeated)
             0x2000..=0x3FFF => (), // PPU (repeated)
@@ -232,8 +346,7 @@ impl memory {
     }
 }
 
-
-struct system {
+struct System {
     a: word,
     x: word,
     y: word,
@@ -241,10 +354,8 @@ struct system {
     s: word,
     p: word,
 
-
-    mem: memory,
+    mem: Memory,
 }
-
 
 const C_BIT: u8 = (1 << 0);
 const Z_BIT: u8 = (1 << 1);
@@ -254,7 +365,16 @@ const B_BIT: u8 = (1 << 4);
 const V_BIT: u8 = (1 << 6);
 const N_BIT: u8 = (1 << 7);
 
-impl system {
+fn test_bool() -> bool {true}
+impl System {
+
+    #[inline]
+    fn branch_on(&mut self, val: bool)  {
+        match val {
+            true => self.relative_jump(),
+            false => self.advance_pc_2(),
+        }
+    }
 
     #[inline]
     fn reset(&mut self) {
@@ -306,13 +426,11 @@ impl system {
         doubleword::from_words(hi, lo)
     }
 
-
     #[inline]
     fn advance_exec(&mut self) {
         let next_instr = self.mem.load(self.pc);
         self.exec(next_instr)
     }
-
 
     #[inline]
     fn push_word(&mut self, data: word) {
@@ -366,119 +484,187 @@ impl system {
     }
 
     #[inline]
-    fn relative_jump(&mut self, offset: word) {
-        self.pc = self.pc + offset; // TODO: check that signed vs unsigned is not a problem (shouldn't be with 2's complement)
+    /// This function assumes that the jump offset is available at PC + 1
+    fn relative_jump(&mut self) {
+        self.pc = self.pc + self.load_offset(self.pc + 1u8);
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn C(&self) -> bool {
         (self.p.native_value() & C_BIT) == C_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_C(&mut self) {
         self.p = word {value: self.p.native_value() | C_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_C(&mut self) {
         self.p = word {value: self.p.native_value() & !C_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn Z(&self) -> bool {
         (self.p.native_value() & Z_BIT) == Z_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_Z(&mut self) {
         self.p = word {value: self.p.native_value() | Z_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_Z(&mut self) {
         self.p = word {value: self.p.native_value() & !Z_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn I(&self) -> bool {
         (self.p.native_value() & I_BIT) == I_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_I(&mut self) {
         self.p = word {value: self.p.native_value() | I_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_I(&mut self) {
         self.p = word {value: self.p.native_value() & !I_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn D(&self) -> bool {
         (self.p.native_value() & D_BIT) == D_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_D(&mut self) {
         self.p = word {value: self.p.native_value() | D_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_D(&mut self) {
         self.p = word {value: self.p.native_value() & !D_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn B(&self) -> bool {
         (self.p.native_value() & B_BIT) == B_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_B(&mut self) {
         self.p = word {value: self.p.native_value() | B_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_B(&mut self) {
         self.p = word {value: self.p.native_value() & !B_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn V(&self) -> bool {
         (self.p.native_value() & V_BIT) == V_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_V(&mut self) {
         self.p = word {value: self.p.native_value() | V_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_V(&mut self) {
         self.p = word {value: self.p.native_value() & !V_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn N(&self) -> bool {
         (self.p.native_value() & N_BIT) == N_BIT
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn set_N(&mut self) {
         self.p = word {value: self.p.native_value() | N_BIT};
     }
 
     #[inline]
+    #[allow(non_snake_case)]
     fn clear_N(&mut self) {
         self.p = word {value: self.p.native_value() & !N_BIT};
     }
+
+    #[inline]
+    /// Used for ind addressing type with X
+    fn indirect_x(&self) -> word {
+        let addr = self.load((self.pc + 1u8).cl_add(self.x));
+        let val = self.load(addr.as_doubleword());
+        val
+    }
+
+    #[inline]
+    /// Used for ind addressing type with Y
+    fn indirect_y(&self) -> word {
+        let addr = self.load(self.pc + 1u8);
+        let val = self.load(addr.as_doubleword()) + self.y;
+        val
+    }
+
+    #[inline]
+    fn update_flags_zn(&mut self, val: word) {
+
+        let val = val.native_value_signed();
+
+        if val < 0 {
+            self.clear_Z();
+            self.set_N();
+        }
+        else if val == 0 {
+            self.set_Z();
+            self.clear_N();
+        }
+        else { // val > 0
+            self.clear_Z();
+            self.clear_N();
+        }
+    }
+
+    #[inline]
+    // Value is assumed to be a register
+    fn compare(&mut self, val: word) {
+        //TODO: WRONG! make only works for compare with immediate values, must make it generic
+
+        // TODO: check if this correct, Flag behaviour is not clear yet
+        let temp = self.load(self.pc + 1u8);
+        let (res, did_overflow) = val.native_value().overflowing_sub(temp.native_value());
+        let is_negative = (res as i8) < 0;
+
+        let mask: u8 = if did_overflow { 0b01000000u8 } else { 0u8 }; // V bit
+        let mask: u8 = if is_negative { mask | 0b10000000u8 } else { mask | 0b00000001u8 }; // N or C
+        self.p = self.p | mask;
+    }
     
-
-
-
-
     fn exec(&mut self, instr: word) {
         // Matrix evaluation inspired by https://www.masswerk.at/6502/6502_instruction_set.html
         match Self::low_nibble(instr) {
@@ -498,7 +684,7 @@ impl system {
                     },
                     0x3 => { // BMI
                         if self.N() {
-                            self.pc = self.pc + self.load_offset(self.pc + 1u8)
+                            self.relative_jump();
                         }
                         else {
                             self.pc = self.pc + 2u8;
@@ -509,7 +695,7 @@ impl system {
                     },
                     0x5 => { // BVC
                         if !self.V() {
-                            self.pc = self.pc + self.load_offset(self.pc + 1u8); //TODO: might want to make of this pattern a function or macro
+                             //TODO: might want to make of this pattern a function or macro
                         }
                         else {
                             self.pc = self.pc + 2u8;
@@ -520,93 +706,110 @@ impl system {
                     },
                     0x7 => { // BVS
                         if self.V() {
-                            self.pc = self.pc + self.load_offset(self.pc + 1u8);
+                            self.relative_jump();
                         }
                         else {
-
+                            self.advance_pc_2();
                         }
                     },
                     0x8 => { // Illegal
                         unimplemented!();
                     },
                     0x9 => { // BCC
-                        unimplemented!();
+                        self.branch_on(!self.C());
                     },
-                    0xA => { // LDY
-                        unimplemented!();
+                    0xA => { // LDY #
+                        let addr = self.load(self.pc + 1u8);
+                        self.y = self.load(addr.as_doubleword());
                     },
                     0xB => { // BCS
-                        unimplemented!();
+                        self.branch_on(self.C());
                     },
-                    0xC => { // CPY
-                        unimplemented!();
+                    0xC => { // CPY #
+                        self.compare(self.y);
+                        self.advance_pc_2();
                     },
                     0xD => { // BNE
-                        unimplemented!();
+                        self.branch_on(!self.Z());
                     },
-                    0xE => { // CPX
-                        unimplemented!();
+                    0xE => { // CPX #
+                        self.compare(self.x);
+                        self.advance_pc_2();
                     },
-                    0xF => { // BEQ
-                        unimplemented!();
+                    0xF => { // BEQ rel
+                        self.branch_on(self.Z());
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
                 }
             },
-            0x1 => { // ind
+            0x1 => { // ind addressing
+                // TODO: factor out common code
                 match Self::high_nibble(instr) {
                     0x0 => { // ORA X
-                        unimplemented!();
+                        let val = self.indirect_x();
+                        self.a = self.a | val;
+                        self.update_flags_zn(self.a);
                     },
-                    0x1 => { // ORA ind
-                        unimplemented!();
+                    0x1 => { // ORA Y
+                        let val = self.indirect_y();
+                        self.a = self.a | val;
+                        self.update_flags_zn(self.a);
                     },
                     0x2 => { // AND X
-                        unimplemented!();
+                        let val = self.indirect_x();
+                        self.a = self.a & val;
+                        self.update_flags_zn(self.a);
                     },
-                    0x3 => { // AND ind
-                        unimplemented!();
+                    0x3 => { // AND Y
+                        let val = self.indirect_y();
+                        self.a = self.a & val;
+                        self.update_flags_zn(self.a);
                     },
                     0x4 => { // EOR X
-                        unimplemented!();
+                        let val = self.indirect_x();
+                        self.a = self.a ^ val;
+                        self.update_flags_zn(self.a);
                     },
-                    0x5 => { // EOR ind
-                        unimplemented!();
+                    0x5 => { // EOR Y
+                        let val = self.indirect_y();
+                        self.a = self.a ^ val;
+                        self.update_flags_zn(self.a);
                     },
                     0x6 => { // ADC X
                         unimplemented!();
                     },
-                    0x7 => { // ADC ind
+                    0x7 => { // ADC Y
                         unimplemented!();
                     },
                     0x8 => { // STA X
                         unimplemented!();
                     },
-                    0x9 => { // STA ind
+                    0x9 => { // STA Y
                         unimplemented!();
                     },
                     0xA => { // LDA X
                         unimplemented!();
                     },
-                    0xB => { // LDA ind
+                    0xB => { // LDA Y
                         unimplemented!();
                     },
                     0xC => { // CMP X
                         unimplemented!();
                     },
-                    0xD => { // CMP ind
+                    0xD => { // CMP Y
                         unimplemented!();
                     },
                     0xE => { // SBC X
                         unimplemented!();
                     },
-                    0xF => { // SBC ind
+                    0xF => { // SBC Y
                         unimplemented!();
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
                 }
+                self.advance_pc_2();
             },
             0x2 => {
                 match Self::high_nibble(instr) {
@@ -1370,7 +1573,6 @@ impl system {
 
     
 }
-
 
 fn main() {
     let test: i16 = -2;
