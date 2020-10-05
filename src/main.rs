@@ -175,6 +175,30 @@ impl BitXor<u8> for word {
     }
 }
 
+impl From<u8> for word {
+    fn from(val: u8) -> Self {
+        Self {
+            value: val,
+        }
+    }
+}
+
+impl From<u16> for word {
+    fn from(val: u16) -> Self {
+        Self {
+            value: val as u8,
+        }
+    }
+}
+
+impl From<i16> for word {
+    fn from(val: i16) -> Self {
+        Self {
+            value: val as u8,
+        }
+    }
+}
+
 /// Represents a doubleword in 6502 (used for addressing and the PC)
 /// Currently stored in native endianness
 #[derive(Clone, Copy)]
@@ -281,12 +305,36 @@ impl Add<u8> for doubleword {
     }
 }
 
+impl BitAnd<i16> for doubleword {
+    type Output = Self;
+
+    fn bitand(self, other: i16) -> Self {
+        Self {
+            value: self.value & (other as u16),
+        }
+    }
+}
+
 impl Add<i16> for doubleword {
     type Output = Self;
     fn add(self, other: i16) -> Self {
         Self {
             value: (self.value as i16 + other) as u16, 
         }
+    }
+}
+
+impl From<u16> for doubleword {
+    fn from(val: u16) -> Self {
+        Self {
+            value: val,
+        }
+    }
+}
+
+impl PartialEq<i16> for doubleword {
+    fn eq(&self, other: &i16) -> bool {
+        self.value == (*other as u16)
     }
 }
 
@@ -365,6 +413,13 @@ const B_BIT: u8 = (1 << 4);
 const V_BIT: u8 = (1 << 6);
 const N_BIT: u8 = (1 << 7);
 
+const CARRY_BIT: i16 = (1 << 8);
+
+enum AddSubMode {
+    Add,
+    Sub,
+}
+
 fn test_bool() -> bool {true}
 impl System {
 
@@ -389,7 +444,7 @@ impl System {
     #[inline]
     fn low_nibble(byte: word) -> u8 {
         //no need to worry about endianness since it's a single byte
-        byte.native_value()
+        byte.native_value() & 0x0f
     }
     
     #[inline]
@@ -490,6 +545,11 @@ impl System {
     }
 
     #[inline]
+    fn carry_bit(val: doubleword) -> bool {
+        (val & CARRY_BIT) != 0
+    }
+
+    #[inline]
     #[allow(non_snake_case)]
     fn C(&self) -> bool {
         (self.p.native_value() & C_BIT) == C_BIT
@@ -505,6 +565,15 @@ impl System {
     #[allow(non_snake_case)]
     fn clear_C(&mut self) {
         self.p = word {value: self.p.native_value() & !C_BIT};
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
+    fn update_C(&mut self, val: bool) {
+        match val {
+            true => self.set_C(),
+            false => self.clear_C(),
+        }
     }
 
     #[inline]
@@ -527,6 +596,15 @@ impl System {
 
     #[inline]
     #[allow(non_snake_case)]
+    fn update_Z(&mut self, val: bool) {
+        match val {
+            true => self.set_Z(),
+            false => self.clear_Z(),
+        }
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
     fn I(&self) -> bool {
         (self.p.native_value() & I_BIT) == I_BIT
     }
@@ -541,6 +619,15 @@ impl System {
     #[allow(non_snake_case)]
     fn clear_I(&mut self) {
         self.p = word {value: self.p.native_value() & !I_BIT};
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
+    fn update_I(&mut self, val: bool) {
+        match val {
+            true => self.set_I(),
+            false => self.clear_I(),
+        }
     }
 
     #[inline]
@@ -563,6 +650,15 @@ impl System {
 
     #[inline]
     #[allow(non_snake_case)]
+    fn update_D(&mut self, val: bool) {
+        match val {
+            true => self.set_D(),
+            false => self.clear_D(),
+        }
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
     fn B(&self) -> bool {
         (self.p.native_value() & B_BIT) == B_BIT
     }
@@ -577,6 +673,15 @@ impl System {
     #[allow(non_snake_case)]
     fn clear_B(&mut self) {
         self.p = word {value: self.p.native_value() & !B_BIT};
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
+    fn update_B(&mut self, val: bool) {
+        match val {
+            true => self.set_B(),
+            false => self.clear_B(),
+        }
     }
 
     #[inline]
@@ -599,6 +704,15 @@ impl System {
 
     #[inline]
     #[allow(non_snake_case)]
+    fn update_V(&mut self, val: bool) {
+        match val {
+            true => self.set_V(),
+            false => self.clear_V(),
+        }
+    }
+
+    #[inline]
+    #[allow(non_snake_case)]
     fn N(&self) -> bool {
         (self.p.native_value() & N_BIT) == N_BIT
     }
@@ -616,6 +730,15 @@ impl System {
     }
 
     #[inline]
+    #[allow(non_snake_case)]
+    fn update_N(&mut self, val: bool) {
+        match val {
+            true => self.set_N(),
+            false => self.clear_N(),
+        }
+    }
+
+    #[inline]
     /// Used for ind addressing type with X
     fn indirect_x(&self) -> word {
         let addr = self.load((self.pc + 1u8).cl_add(self.x));
@@ -629,6 +752,34 @@ impl System {
         let addr = self.load(self.pc + 1u8);
         let val = self.load(addr.as_doubleword()) + self.y;
         val
+    }
+
+    // =============== HELPERS FUNCTIONS FOR RETRIEVING VALUES ===============
+
+    #[inline]
+    /// Convenience function to access # (immediate) value at pc + 1
+    fn immediate_value(&self) -> word {
+        // TODO: is it correct? Exact same as immediate
+        self.load(self.pc + 1u8)
+    }
+
+    #[inline]
+    /// Used for loading the value for zpg instructions
+    fn zeropage_value(&self) -> word {
+        // TODO: is it correct? Exact same as immediate
+        self.immediate_value()
+    }
+
+    #[inline]
+    /// Loads word from zeropage address + value at X
+    fn zeropage_value_x(&self) -> word {
+        self.load((self.pc + 1u8) + self.x)
+    }
+
+    #[inline]
+    /// Loads word from zeropage address + value at Y
+    fn zeropage_value_y(&self) -> word {
+        self.load((self.pc + 1u8) + self.y)
     }
 
     #[inline]
@@ -650,19 +801,92 @@ impl System {
         }
     }
 
+    // =============== CONVENIENCE FUNCTIONS / MACROS FOR COMPUTATIONS ===============
+
     #[inline]
-    // Value is assumed to be a register
-    fn compare(&mut self, val: word) {
-        //TODO: WRONG! make only works for compare with immediate values, must make it generic
-
+    /// Performs the 6502 compare operation: a substraction folowed by the updates of N, Z and C flags
+    fn compare(&mut self, lhs: word, rhs: word) {
         // TODO: check if this correct, Flag behaviour is not clear yet
-        let temp = self.load(self.pc + 1u8);
-        let (res, did_overflow) = val.native_value().overflowing_sub(temp.native_value());
-        let is_negative = (res as i8) < 0;
+        let (res, did_overflow) = lhs.native_value().overflowing_sub(rhs.native_value());
 
-        let mask: u8 = if did_overflow { 0b01000000u8 } else { 0u8 }; // V bit
-        let mask: u8 = if is_negative { mask | 0b10000000u8 } else { mask | 0b00000001u8 }; // N or C
-        self.p = self.p | mask;
+        self.update_V(did_overflow);
+        self.update_flags_zn(word::from(res));
+    }
+
+    #[inline]
+    fn or(&mut self, lhs: word, rhs: word) -> word {
+        let ret = lhs | rhs;
+        self.update_flags_zn(ret);
+        ret
+    }
+
+    #[inline]
+    fn and(&mut self, lhs: word, rhs: word) -> word {
+        let ret = lhs & rhs;
+        self.update_flags_zn(ret);
+        ret
+    }
+
+    #[inline]
+    /// XOR
+    fn eor(&mut self, lhs: word, rhs: word) -> word {
+        let ret = lhs ^ rhs;
+        self.update_flags_zn(ret);
+        ret
+    }
+
+    #[inline]
+    /// Same as EOR
+    fn xor(&mut self, lhs: word, rhs: word) -> word {
+        self.eor(lhs, rhs)
+    }
+
+
+    #[inline]
+    /// Convencience function for all carry-type ops
+    fn op_carry(&mut self, val: word, mode: AddSubMode) -> word {
+        let c = self.C() as i16;
+        let m = val.native_value_signed() as i16;
+        let a = self.a.native_value_signed() as i16;
+
+        let (res, did_overflow) = match mode {
+            AddSubMode::Add => c.overflowing_add(m),
+            AddSubMode::Sub => c.overflowing_sub(m),
+        };
+        let (res2, did_overflow_2) = match mode {
+            AddSubMode::Add => res.overflowing_add(a),
+            AddSubMode::Sub => res.overflowing_sub(a),
+        };
+        
+        self.update_C((res2 & CARRY_BIT) != 0);
+        self.update_V(did_overflow | did_overflow_2);
+        let ret = word::from(res2);
+        self.update_flags_zn(ret);
+        ret
+    }
+
+    #[inline]
+    /// ADC convenience function
+    fn adc(&mut self, val: word) -> word {
+        self.op_carry(val, AddSubMode::Add)
+    }
+
+    #[inline]
+    /// ADC convenience function - equivalent to adc()
+    fn add_carry(&mut self, val: word) -> word {
+       self.adc(val)
+    }
+
+    #[inline]
+    /// SBC convenience function
+    fn sbc(&mut self, val: word) -> word {
+        self.op_carry(val, AddSubMode::Sub)
+    }
+
+    #[inline]
+    /// SBC convenience function - equivalent to sbc()
+    fn sub_carry(&mut self, val: word) -> word {
+        self.sbc(val)
     }
     
     fn exec(&mut self, instr: word) {
@@ -726,14 +950,16 @@ impl System {
                         self.branch_on(self.C());
                     },
                     0xC => { // CPY #
-                        self.compare(self.y);
+                        let rhs = self.load(self.pc + 1u8);
+                        self.compare(self.y, rhs);
                         self.advance_pc_2();
                     },
                     0xD => { // BNE
                         self.branch_on(!self.Z());
                     },
                     0xE => { // CPX #
-                        self.compare(self.x);
+                        let rhs = self.load(self.pc + 1u8);
+                        self.compare(self.x, rhs);
                         self.advance_pc_2();
                     },
                     0xF => { // BEQ rel
@@ -777,34 +1003,38 @@ impl System {
                         self.update_flags_zn(self.a);
                     },
                     0x6 => { // ADC X
-                        unimplemented!();
+                        let val = self.indirect_x();
+                        self.add_carry(val);
                     },
                     0x7 => { // ADC Y
-                        unimplemented!();
+                        let val = self.indirect_y();
+                        self.add_carry(val);
                     },
                     0x8 => { // STA X
-                        unimplemented!();
+                        self.store(self.indirect_x().as_doubleword(), self.a);
                     },
                     0x9 => { // STA Y
-                        unimplemented!();
+                        self.store(self.indirect_y().as_doubleword(), self.a);
                     },
                     0xA => { // LDA X
-                        unimplemented!();
+                        self.a = self.load(self.indirect_x().as_doubleword());
                     },
                     0xB => { // LDA Y
-                        unimplemented!();
+                        self.a = self.load(self.indirect_y().as_doubleword());
                     },
                     0xC => { // CMP X
-                        unimplemented!();
+                        let val = self.indirect_x();
+                        self.compare(self.a, val);
                     },
                     0xD => { // CMP Y
-                        unimplemented!();
+                        let val = self.indirect_y();
+                        self.compare(self.a, val);
                     },
                     0xE => { // SBC X
-                        unimplemented!();
+                        self.sbc(self.indirect_x());
                     },
                     0xF => { // SBC Y
-                        unimplemented!();
+                        self.sbc(self.indirect_y());
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
@@ -843,8 +1073,9 @@ impl System {
                     0x9 => { // Illegal
                         unimplemented!();
                     },
-                    0xA => { // LDX
-                        unimplemented!();
+                    0xA => { // LDX #
+                        self.x = self.immediate_value();
+                        self.advance_pc_2();
                     },
                     0xB => { // Illegal
                         unimplemented!();
@@ -928,7 +1159,13 @@ impl System {
                         unimplemented!();
                     },
                     0x2 => { // BIT
-                        unimplemented!();
+                        let val = self.load(self.pc + 1u8);
+                        let n_flag = (val & 0b10000000).native_value() != 0;
+                        let v_flag = (val & 0b01000000).native_value() != 0;
+                        self.update_N(n_flag);
+                        self.update_V(v_flag);
+                        let and = self.a & val;
+                        self.update_Z(and.native_value() == 0);
                     },
                     0x3 => { // Illegal
                         unimplemented!();
@@ -945,26 +1182,28 @@ impl System {
                     0x7 => { // Illegal
                         unimplemented!();
                     },
-                    0x8 => { // STY
-                        unimplemented!();
+                    0x8 => { // STY zpg
+                        self.store(self.zeropage_value().as_doubleword(), self.y);
                     },
-                    0x9 => { // STY X
-                        unimplemented!();
+                    0x9 => { // STY zpg X
+                        self.store(self.zeropage_value_x().as_doubleword(), self.y);
                     },
-                    0xA => { // LDY
-                        unimplemented!();
+                    0xA => { // LDY zpg
+                        self.y = self.load(self.zeropage_value().as_doubleword());
+                        self.update_flags_zn(self.y);
                     },
-                    0xB => { // LDY X
-                        unimplemented!();
+                    0xB => { // LDY zpg X
+                        self.y = self.load(self.zeropage_value_x().as_doubleword());
+                        self.update_flags_zn(self.y);
                     },
-                    0xC => { // CPY
-                        unimplemented!();
+                    0xC => { // CPY zpg
+                        self.compare(self.y, self.zeropage_value());
                     },
                     0xD => { // Illegal
                         unimplemented!();
                     },
-                    0xE => { // CPX
-                        unimplemented!();
+                    0xE => { // CPX zpg
+                        self.compare(self.x, self.zeropage_value());
                     },
                     0xF => { // Illegal
                         unimplemented!();
@@ -976,52 +1215,52 @@ impl System {
             0x5 => { // zpg
                 match Self::high_nibble(instr) {
                     0x0 => { // ORA
-                        unimplemented!();
+                        self.a = self.or(self.a, self.zeropage_value());
                     },
                     0x1 => { // ORA X
-                        unimplemented!();
+                        self.a = self.or(self.a, self.zeropage_value_x());
                     },
                     0x2 => { // AND
-                        unimplemented!();
+                        self.a = self.and(self.a, self.zeropage_value());
                     },
                     0x3 => { // AND X
-                        unimplemented!();
+                        self.a = self.and(self.a, self.zeropage_value_x());
                     },
                     0x4 => { // EOR
-                        unimplemented!();
+                        self.a = self.eor(self.a, self.zeropage_value());
                     },
                     0x5 => { // EOR X
-                        unimplemented!();
+                        self.a = self.eor(self.a, self.zeropage_value_x());
                     },
                     0x6 => { // ADC
-                        unimplemented!();
+                        self.a = self.add_carry(self.zeropage_value());
                     },
                     0x7 => { // ADC X
-                        unimplemented!();
+                        self.a = self.add_carry(self.zeropage_value_x());
                     },
                     0x8 => { // STA
-                        unimplemented!();
+                        self.store(self.zeropage_value().as_doubleword(), self.a);
                     },
                     0x9 => { // STA X
-                        unimplemented!();
+                        self.store(self.zeropage_value_x().as_doubleword(), self.a);
                     },
                     0xA => { // LDA
-                        unimplemented!();
+                        self.a = self.load(self.zeropage_value().as_doubleword());
                     },
                     0xB => { // LDA X
-                        unimplemented!();
+                        self.a = self.load(self.zeropage_value_x().as_doubleword());
                     },
                     0xC => { // CMP
-                        unimplemented!();
+                        self.compare(self.a, self.zeropage_value());
                     },
                     0xD => { // CMP X
-                        unimplemented!();
+                        self.compare(self.a, self.zeropage_value_x());
                     },
                     0xE => { // SBC
-                        unimplemented!();
+                        self.a = self.sub_carry(self.zeropage_value());
                     },
                     0xF => { // SBC X
-                        unimplemented!();
+                        self.a = self.sub_carry(self.zeropage_value_x());
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
