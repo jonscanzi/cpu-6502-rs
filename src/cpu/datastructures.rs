@@ -89,10 +89,9 @@ pub trait ClAdd<O: Sized>: Sized {
     fn cl_add(self, other: O) -> Self::Output;
 }
 
-
 /// Reperesents a word in 6502 (i.e. a single byte).
 /// Currently stored in native endianness
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[allow(non_camel_case_types)]
 pub struct word {
     value: u8,
@@ -202,6 +201,40 @@ impl word {
         let ret_carry = data.bit_at(0).unwrap(); // Static use of function, error handling not required
         let ret_val = (data >> 1) | ((carry_bit as u8) << 7);
         (ret_val, ret_carry)
+    }
+
+    // === HELPERS FOR ENCODING AND DECODING 6502 INSTRUCTIONS ===
+
+    pub fn aaa(&self) -> u8 {
+        (self.value & 0b11100000u8) >> 5u8
+    }
+
+    pub fn bbb(&self) -> u8 {
+        (self.value & 0b00011100u8) >> 2u8
+    }
+
+    pub fn cc(&self) -> u8 {
+        self.value & 0b00000011u8
+    }
+
+    pub fn update_aaa(&mut self, byte: u8) {
+        debug_assert!(byte <= 0b111u8, "Assembler: trying to update aaa with a value more than 3 bits");
+        let val = self.native_value();
+        self.value = (byte << 5u8) | (val & 0b00011111u8);
+    }
+
+    // FIXME: implement it
+    pub fn update_bbb(&mut self, byte: u8) {
+        debug_assert!(byte <= 0b111u8, "Assembler: trying to update bbb with a value more than 3 bits");
+        let val = self.native_value();
+        self.value = (byte << 2u8) | (val & 0b11100011u8);
+    }
+
+    // FIXME: implement it
+    pub fn update_cc(&mut self, byte: u8) {
+        debug_assert!(byte <= 0b11u8, "Assembler: trying to update cc with a value more than 3 bits");
+        let val = self.native_value();
+        self.value = byte | (val & 0b11111100u8);
     }
 }
 
@@ -382,7 +415,7 @@ impl From<i16> for word {
 
 /// Represents a doubleword in 6502 (used for addressing and the PC)
 /// Currently stored in native endianness
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[allow(non_camel_case_types)]
 pub struct doubleword {
     value: u16,
@@ -420,9 +453,9 @@ impl doubleword {
         }
     }
 
-    pub fn to_words(&self) -> [word; 2] {
+    pub fn to_words(self) -> [word; 2] {
         let ret = u16::to_le_bytes(self.value);
-        [word{value: ret[0]}, word{value: ret[1]}]
+        [word::from(ret[0]), word::from(ret[1])]
     }
 
     pub fn zero() -> Self {

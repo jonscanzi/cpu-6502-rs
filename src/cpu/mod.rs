@@ -1,5 +1,5 @@
 
-mod datastructures;
+pub mod datastructures;
 use datastructures::word;
 use datastructures::doubleword;
 use datastructures::ClAdd;
@@ -65,8 +65,11 @@ struct System {
     a: word,
     x: word,
     y: word,
+    /// Program counter
     pc: doubleword,
+    /// Processor stack register
     s: word,
+    /// Processor status register
     p: word,
 
     mem: Memory,
@@ -79,9 +82,6 @@ const D_BIT: u8 = (1 << 3);
 const B_BIT: u8 = (1 << 4);
 const V_BIT: u8 = (1 << 6);
 const N_BIT: u8 = (1 << 7);
-
-
-
 
 enum AddSubMode {
     Add,
@@ -169,14 +169,15 @@ impl System {
     }
 
     #[inline]
+    /// More comonly called 'pop'
     fn pull_word(&mut self) -> word {
         self.s = self.s - 1u8;
         self.load(self.s.as_doubleword())
 
     }
 
-    /// More comonly called 'pop'
     #[inline]
+    /// More comonly called 'pop'
     fn pull_doubleword(&mut self) -> doubleword {
         self.s = self.s - 2u8;
         self.load_doubleword(self.s.as_doubleword())
@@ -399,6 +400,8 @@ impl System {
         }
     }
 
+    // =============== HELPERS FUNCTIONS FOR RETRIEVING VALUES ===============
+
     #[inline]
     /// Used for ind addressing type with X
     fn indirect_x(&self) -> word {
@@ -415,8 +418,6 @@ impl System {
         val
     }
 
-    // =============== HELPERS FUNCTIONS FOR RETRIEVING VALUES ===============
-
     #[inline]
     /// Convenience function to access # (immediate) value at pc + 1
     fn immediate_value(&self) -> word {
@@ -425,22 +426,39 @@ impl System {
     }
 
     #[inline]
+    /// Loads word from zeropage address + value at X
+    fn zeropage_address(&self) -> doubleword {
+        self.load(self.pc + 1u8).as_doubleword()
+    }
+
+    #[inline]
+    /// Loads word from zeropage address + value at X
+    fn zeropage_address_x(&self) -> doubleword {
+        self.load((self.pc + 1u8) + self.x).as_doubleword()
+    }
+
+    #[inline]
+    /// Loads word from zeropage address + value at X
+    fn zeropage_address_y(&self) -> doubleword {
+        self.load((self.pc + 1u8) + self.y).as_doubleword()
+    }
+
+    #[inline]
     /// Used for loading the value for zpg instructions
     fn zeropage_value(&self) -> word {
-        // TODO: is it correct? Exact same as immediate
-        self.immediate_value()
+        self.load(self.zeropage_address())
     }
 
     #[inline]
     /// Loads word from zeropage address + value at X
     fn zeropage_value_x(&self) -> word {
-        self.load((self.pc + 1u8) + self.x)
+        self.load(self.zeropage_address_x())
     }
 
     #[inline]
     /// Loads word from zeropage address + value at Y
     fn zeropage_value_y(&self) -> word {
-        self.load((self.pc + 1u8) + self.y)
+        self.load(self.zeropage_address_y())
     }
 
     #[inline]
@@ -460,6 +478,12 @@ impl System {
             self.clear_Z();
             self.clear_N();
         }
+    }
+
+    #[inline]
+    /// 
+    fn absolute_value(&self) -> word {
+        unimplemented!();
     }
 
     // =============== CONVENIENCE FUNCTIONS / MACROS FOR COMPUTATIONS ===============
@@ -585,10 +609,6 @@ impl System {
         ret
     }
 
-    
-
-
-    
     fn exec(&mut self, instr: word) {
         // Matrix evaluation inspired by https://www.masswerk.at/6502/6502_instruction_set.html
         match Self::low_nibble(instr) {
@@ -969,58 +989,74 @@ impl System {
             0x6 => { // zpg
                 match Self::high_nibble(instr) {
                     0x0 => { // ASL
-                        unimplemented!();
+                        let zpg = self.zeropage_value();
+                        let new_val = self.asl(zpg);
+                        self.store(self.zeropage_address(), new_val);
                     },
                     0x1 => { // ASL X
-                        unimplemented!();
+                        let zpg = self.zeropage_value_x();
+                        let new_val = self.asl(zpg);
+                        self.store(self.zeropage_address_x(), new_val);
                     },
                     0x2 => { // ROL
-                        unimplemented!();
+                        let zpg = self.zeropage_value();
+                        let new_val = self.rol(zpg);
+                        self.store(self.zeropage_address(), new_val);
                     },
                     0x3 => { // ROL X
-                        unimplemented!();
+                        let zpg = self.zeropage_value_x();
+                        let new_val = self.rol(zpg);
+                        self.store(self.zeropage_address_x(), new_val);
                     },
                     0x4 => { // LSR
-                        unimplemented!();
+                        let zpg = self.zeropage_value();
+                        let new_val = self.lsr(zpg);
+                        self.store(self.zeropage_address(), new_val);
                     },
                     0x5 => { // LSR X
-                        unimplemented!();
+                        let zpg = self.zeropage_value_x();
+                        let new_val = self.lsr(zpg);
+                        self.store(self.zeropage_address_x(), new_val);
                     },
                     0x6 => { // ROR
-                        unimplemented!();
+                        let zpg = self.zeropage_value();
+                        let new_val = self.ror(zpg);
+                        self.store(self.zeropage_address(), new_val);
                     },
                     0x7 => { // ROR X
-                        unimplemented!();
+                        let zpg = self.zeropage_value_x();
+                        let new_val = self.ror(zpg);
+                        self.store(self.zeropage_address_x(), new_val);
                     },
                     0x8 => { // STX
-                        unimplemented!();
+                        self.store(self.zeropage_address(), self.x);
                     },
                     0x9 => { // STX Y
-                        unimplemented!();
+                        self.store(self.zeropage_address_y(), self.x);
                     },
                     0xA => { // LDX
-                        unimplemented!();
+                        self.x = self.zeropage_value();
                     },
                     0xB => { // LDX Y
-                        unimplemented!();
+                        self.x = self.zeropage_value_y();
                     },
                     0xC => { // DEC
-                        unimplemented!();
+                        self.store(self.zeropage_address(), self.zeropage_value() - 1);
                     },
                     0xD => { // DEC X
-                        unimplemented!();
+                        self.store(self.zeropage_address_x(), self.zeropage_value_x() - 1);
                     },
                     0xE => { // INC
-                        unimplemented!();
+                        self.store(self.zeropage_address(), self.zeropage_value() + 1);
                     },
                     0xF => { // INC X
-                        unimplemented!();
+                        self.store(self.zeropage_address_x(), self.zeropage_value_x() + 1);
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
                 }
             },
-            0x7 => {
+            0x7 => { // ALL ILLEGAL
                 match Self::high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
@@ -1077,52 +1113,52 @@ impl System {
             0x8 => { // impl
                 match Self::high_nibble(instr) {
                     0x0 => { // PHP
-                        unimplemented!();
+                        self.push_word(self.p);
                     },
                     0x1 => { // CLC
-                        unimplemented!();
+                        self.clear_C();
                     },
                     0x2 => { // PLP
-                        unimplemented!();
+                        self.p = self.pull_word();
                     },
                     0x3 => { // SEC
-                        unimplemented!();
+                        self.set_C();
                     },
                     0x4 => { // PHA
-                        unimplemented!();
+                        self.push_word(self.a);
                     },
                     0x5 => { // CLI
-                        unimplemented!();
+                        self.clear_I();
                     },
                     0x6 => { // PLA
-                        unimplemented!();
+                        self.a = self.pull_word();
                     },
                     0x7 => { // SEI
-                        unimplemented!();
+                        self.set_I();
                     },
                     0x8 => { // DEY
-                        unimplemented!();
+                        self.y = self.y - 1;
                     },
                     0x9 => { // TYA
-                        unimplemented!();
+                        self.a = self.y;
                     },
                     0xA => { // TAY
-                        unimplemented!();
+                        self.y = self.a;
                     },
                     0xB => { // CLV
-                        unimplemented!();
+                        self.clear_V()
                     },
                     0xC => { // INY
-                        unimplemented!();
+                        self.y = self.y + 1;
                     },
                     0xD => { // CLD
-                        unimplemented!();
+                        // Unused on NES
                     },
                     0xE => { // INX
-                        unimplemented!();
+                        self.x = self.x + 1;
                     },
                     0xF => { // SED
-                        unimplemented!();
+                        // Unused on NES
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
@@ -1130,25 +1166,26 @@ impl System {
             },
             0x9 => { // abs
                 match Self::high_nibble(instr) {
-                    0x0 => { // ORA
-                        unimplemented!();
+                    0x0 => { // ORA #
+                        self.a = self.or(self.a, self.immediate_value());
                     },
                     0x1 => { // ORA Y
+                        self.a = self.or(self.a, self.immediate_value());
                         unimplemented!();
                     },
-                    0x2 => { // AND
+                    0x2 => { // AND #
                         unimplemented!();
                     },
                     0x3 => { // AND Y
                         unimplemented!();
                     },
-                    0x4 => { // EOR
+                    0x4 => { // EOR #
                         unimplemented!();
                     },
                     0x5 => { // EOR Y
                         unimplemented!();
                     },
-                    0x6 => { // ADC
+                    0x6 => { // ADC #
                         unimplemented!();
                     },
                     0x7 => { // ADC Y
@@ -1160,19 +1197,19 @@ impl System {
                     0x9 => { // STA Y
                         unimplemented!();
                     },
-                    0xA => { // LDA
+                    0xA => { // LDA #
                         unimplemented!();
                     },
                     0xB => { // LDA Y
                         unimplemented!();
                     },
-                    0xC => { // CMP
+                    0xC => { // CMP #
                         unimplemented!();
                     },
                     0xD => { // CMP Y
                         unimplemented!();
                     },
-                    0xE => { // SBS
+                    0xE => { // SBS #
                         unimplemented!();
                     },
                     0xF => { // SBS Y
