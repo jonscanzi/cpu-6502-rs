@@ -8,9 +8,48 @@ use std::ops::Shr;
 
 pub const CARRY_BIT: i16 = (1 << 8);
 
+/// Trait that represents the act of appending (opposed to prepending) some data into a structure
+pub trait Push<O: Sized> {
+    fn push(&mut self, data: O);
+}
+// Convenience structure to build the binary code
+pub struct InstructionStream {
+    pub stream: Vec<word>,
+}
+
+impl InstructionStream {
+    pub fn new() -> Self {
+        Self {
+            stream: Vec::new(),
+        }
+    }
+}
+
+impl Push<word> for InstructionStream {
+    fn push(&mut self, data: word) {
+        self.stream.push(data);
+    }
+}
+
+impl Push<doubleword> for InstructionStream {
+    fn push(&mut self, data: doubleword) {
+        let elems = data.to_words();
+        self.stream.push(elems[0]);
+        self.stream.push(elems[1]);
+    }
+}
+
+impl From<Vec<word>> for InstructionStream {
+    fn from(data: Vec<word>) -> Self {
+        Self {
+            stream: data,
+        }
+    }
+}
+
 #[inline]
 fn carry_bit(val: doubleword) -> bool {
-    (val & CARRY_BIT) != 0
+    (val & CARRY_BIT) != 0u16
 }
 
 #[inline]
@@ -413,6 +452,18 @@ impl From<i16> for word {
     }
 }
 
+impl PartialEq<i8> for word {
+    fn eq(&self, other: &i8) -> bool {
+        self.value == (*other as u8)
+    }
+}
+
+impl PartialEq<u8> for word {
+    fn eq(&self, other: &u8) -> bool {
+        self.value == *other
+    }
+}
+
 /// Represents a doubleword in 6502 (used for addressing and the PC)
 /// Currently stored in native endianness
 #[derive(Clone, Copy, Debug)]
@@ -444,7 +495,7 @@ impl doubleword {
 
     #[inline]
     pub fn as_addr(&self) -> usize {
-        self.value as usize
+        self.native_value() as usize
     }
 
     pub fn from_words(hi: word, lo: word) -> Self {
@@ -553,5 +604,11 @@ impl From<u16> for doubleword {
 impl PartialEq<i16> for doubleword {
     fn eq(&self, other: &i16) -> bool {
         self.value == (*other as u16)
+    }
+}
+
+impl PartialEq<u16> for doubleword {
+    fn eq(&self, other: &u16) -> bool {
+        self.value == *other
     }
 }

@@ -1,7 +1,8 @@
 use regex::Regex;
-use lazy_static::lazy_static;
 use super::cpu::datastructures::word;
 use super::cpu::datastructures::doubleword;
+use super::cpu::datastructures::InstructionStream;
+use super::cpu::datastructures::Push;
 use std::fmt;
 
 const TEST_ASSEMBLER: &str = "
@@ -13,37 +14,7 @@ LDA #$08
 STA $0202
 ";
 
-/// Trait that represents the act of appending (opposed to prepending) some data into a structure
-trait Push<O: Sized> {
-    fn push(&mut self, data: O);
-}
 
-// Convenience structure to build the binary code
-struct InstructionStream {
-    stream: Vec<word>,
-}
-
-impl InstructionStream {
-    pub fn new() -> Self {
-        Self {
-            stream: Vec::new(),
-        }
-    }
-}
-
-impl Push<word> for InstructionStream {
-    fn push(&mut self, data: word) {
-        self.stream.push(data);
-    }
-}
-
-impl Push<doubleword> for InstructionStream {
-    fn push(&mut self, data: doubleword) {
-        let elems = data.to_words();
-        self.stream.push(elems[0]);
-        self.stream.push(elems[1]);
-    }
-}
 
 impl fmt::Display for InstructionStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -55,7 +26,7 @@ impl fmt::Display for InstructionStream {
     }
 }
 
-pub fn parse_program(program: &str) {
+pub fn parse_program(_program: &str) {
     // TODO: remove debug code
     let debug_program = TEST_ASSEMBLER;
     let program = debug_program;
@@ -192,13 +163,13 @@ impl ParsedInstruction {
         // TODO: remove debug portion (running every regex to make sure only one matches), maybe rewrite in functional
         // TODO: make regex array static / lazy_static
         let mut ret: Option<AddrModes> = None;
-        for (idx, re) in operand_regexes.iter().map(|r| Regex::new(r).unwrap()).enumerate() {
+        for (idx, re) in OPERAND_REGEXES.iter().map(|r| Regex::new(r).unwrap()).enumerate() {
 
             ret = match re.captures(op) {
                 Some(cap) => {
                     let operand = &cap[1].to_string();
                     if let Some(_) = ret {
-                        panic!("Error: found 2 parsing of {} in eval_operand(), the second one was {}", op, operand_regexes[idx]);
+                        panic!("Error: found 2 parsing of {} in eval_operand(), the second one was {}", op, OPERAND_REGEXES[idx]);
                     }
                     match idx {
                         //0 r"^\$([0-9A-F]{4})$",       // abs
@@ -234,7 +205,7 @@ impl ParsedInstruction {
     fn eval(line: &str) -> Self {
         
 
-        let re = Regex::new(split_regex).unwrap();
+        let re = Regex::new(SPLIT_REGEX).unwrap();
         let cap = re.captures(line);
 
         let (opc, op) = match cap {
@@ -629,9 +600,9 @@ enum Instructions {
 }
 
 
-const split_regex: &str = r"(\S+)\s*(.*)";
-const operation_regex: &str = r"([A-Z]{3})";
-const operand_regexes: [&str; 9] = [
+const SPLIT_REGEX: &str = r"(\S+)\s*(.*)";
+const OPERATION_REGEXES: &str = r"([A-Z]{3})";
+const OPERAND_REGEXES: [&str; 9] = [
     r"^\$([0-9A-F]{4})$",       // abs
     r"^\$([0-9A-F]{4}),X$",     // abs X
     r"^\$([0-9A-F]{4}),Y$",     // abs Y
@@ -644,7 +615,7 @@ const operand_regexes: [&str; 9] = [
 ];
 
 
-const assembly_regexes: [&str; 9] = [
+const ASSEMBLY_REGEXES: [&str; 9] = [
     r"^([A-Z]{3}) \$([0-9A-F]{4})$",       // abs
     r"^([A-Z]{3}) \$([0-9A-F]{4}),X$",     // abs X
     r"^([A-Z]{3}) \$([0-9A-F]{4}),Y$",     // abs Y

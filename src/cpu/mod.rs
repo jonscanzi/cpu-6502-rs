@@ -4,14 +4,182 @@ use datastructures::word;
 use datastructures::doubleword;
 use datastructures::ClAdd;
 use datastructures::CARRY_BIT;
+use datastructures::InstructionStream;
 
-const RAM_SIZE_BYTES: usize = 1024;
+const RAM_SIZE_BYTES: usize = 0x800;
+
+
+#[cfg(test)]
+mod famicom_tests {
+
+
+    use super::*;
+
+    fn tests_init_system_resetted() -> System<FamicomMemory> {
+        let mut ret = System::new_resetted();
+        ret.pc = doubleword::from(0x8000u16); // FIXME: this is not famicom spec, change it when cpu is almost done
+        ret
+    }
+
+    #[test]
+    fn pc_can_advance_properly() {
+        let mut sys = tests_init_system_resetted();
+        sys.pc = doubleword::from(0u16);
+
+        assert_eq!(sys.pc, 0u16);
+        sys.advance_pc_1();
+        assert_eq!(sys.pc, 1u16);
+        sys.advance_pc_2();
+        assert_eq!(sys.pc, 3u16);
+        sys.advance_pc_3();
+        assert_eq!(sys.pc, 6u16);
+    }
+
+    #[test]
+    fn registers_reset_properly() {
+        let mut sys = tests_init_system_resetted();
+
+        sys.a = word::from(5u8);
+        sys.x = word::from(5u8);
+        sys.y = word::from(5u8);
+        sys.s = word::from(5u8);
+        sys.p = word::from(5u8);
+        sys.pc = doubleword::from(5u16);
+
+        sys.reset();
+
+        assert_eq!(sys.a, 0u8);
+        assert_eq!(sys.x, 0u8);
+        assert_eq!(sys.y, 0u8);
+        assert_eq!(sys.s, 0u8);
+        assert_eq!(sys.p, 0u8);
+        assert_eq!(sys.pc, 0u16);
+    }
+
+    #[test]
+    fn mem_can_load_and_store() {
+        let mut sys = tests_init_system_resetted();
+
+        // Address 0 (min)
+        let addr_min = doubleword::zero();
+        assert_eq!(sys.load(addr_min), 0u8);
+        sys.store(addr_min, word::from(1u8));
+        assert_eq!(sys.load(addr_min), 1u8);
+
+        // Address 4
+        let addr_four = doubleword::from(4u16);
+        assert_eq!(sys.load(addr_four), 0u8);
+        sys.store(addr_four, word::from(1u8));
+        assert_eq!(sys.load(addr_four), 1u8);
+
+        // Max non-mirrored address 
+        let addr_max_non_mirrored = doubleword::from(0x7FC);
+        assert_eq!(sys.load(addr_max_non_mirrored), 0u8);
+        sys.store(addr_max_non_mirrored, word::from(1u8));
+        assert_eq!(sys.load(addr_max_non_mirrored), 1u8);
+
+        // Max mirrored address 
+        let addr_max_mirrored = doubleword::from(0x1FFC);
+        assert_eq!(sys.load(addr_max_mirrored), 1u8);
+        sys.store(addr_max_mirrored, word::from(0u8));
+        assert_eq!(sys.load(addr_max_mirrored), 0u8);
+    }
+
+
+    #[test]
+    fn cpu_can_load_and_store() {
+        // Instruction sequence:
+        // AND #00
+        // ORA #01
+        // STA 01
+
+        let program: [u8; 6] = [0x29, 0x00, 0x09, 0x01, 0x85, 0x01];
+        let program: Vec<word> = program.iter().map(|x| word::from(*x)).collect();
+
+        let mut sys = tests_init_system_resetted();
+
+        sys.run_programm_for(InstructionStream::from(program), 3);
+
+        let addr = doubleword::from(0x01);
+        assert_eq!(sys.load(addr), 0x01u8);
+
+
+        // Instruction sequence:
+        // AND #00
+        // ORA #01
+        // STA 01
+
+        let program: [u8; 6] = [0x29, 0x00, 0x09, 0x01, 0x85, 0x01];
+        let program: Vec<word> = program.iter().map(|x| word::from(*x)).collect();
+
+        let mut sys = tests_init_system_resetted();
+
+        sys.run_programm_for(InstructionStream::from(program), 3);
+
+        let addr = doubleword::from(0x01);
+        assert_eq!(sys.load(addr), 0x01u8);
+
+
+
+
+        // Instruction sequence:
+        // AND #00
+        // ORA #01
+        // STA 01
+
+        let program: [u8; 6] = [0x29, 0x00, 0x09, 0x01, 0x85, 0x01];
+        let program: Vec<word> = program.iter().map(|x| word::from(*x)).collect();
+
+        let mut sys = tests_init_system_resetted();
+
+        sys.run_programm_for(InstructionStream::from(program), 3);
+
+        let addr = doubleword::from(0x01);
+        assert_eq!(sys.load(addr), 0x01u8);
+
+
+
+        // Instruction sequence:
+        // AND #00
+        // ORA #01
+        // STA 01
+
+        let program: [u8; 6] = [0x29, 0x00, 0x09, 0x01, 0x85, 0x01];
+        let program: Vec<word> = program.iter().map(|x| word::from(*x)).collect();
+
+        let mut sys = tests_init_system_resetted();
+
+        sys.run_programm_for(InstructionStream::from(program), 3);
+
+        let addr = doubleword::from(0x01);
+        assert_eq!(sys.load(addr), 0x01u8);
+    }
+
+
+    #[test]
+    fn low_nibble_test() {
+        let val = 0x31u8;
+
+        assert_eq!(val, 0x31u8);
+        assert_eq!(low_nibble(word::from(val)), 0x1u8);
+        assert_eq!(high_nibble(word::from(val)), 0x3u8);
+    }
+
+
+}
 
 struct Ram {
-    data: [word; RAM_SIZE_BYTES],
+    data: Box<[word; RAM_SIZE_BYTES]>,
 }
 
 impl Ram {
+
+    /// Create a new NES-size RAM instance, all filled with zeroes
+    fn new() -> Self {
+        Self {
+            data: Box::new([word::zero(); RAM_SIZE_BYTES]),
+        }
+    }
 
     fn write(&mut self, address: doubleword, data: word) {
         let address: u16 = address.native_value();
@@ -23,10 +191,34 @@ impl Ram {
         debug_assert!(address.native_value() <= 0x07ff);
         self.data[address.as_addr()]
     }
+
+    fn reset(&mut self) {
+        self.data.iter_mut().for_each(|w| *w = word::zero())
+    }
 }
 
 struct Cartridge {
-    program: [word; 1024*1024],
+    program: Box<[word; 0x8000]>,
+}
+
+impl Cartridge {
+    pub fn new_zeroed() -> Self {
+        Self {
+            program: Box::new([word::zero(); 0x8000]),
+        }
+    }
+
+    pub fn push_program(&mut self, program: InstructionStream) {
+        let mut byte_idx = 0;
+        for byte in program.stream {
+            self.program[byte_idx] = byte;
+            byte_idx+=1;
+        }
+    }
+
+    pub fn read(&self, address: doubleword) -> word {
+        self.program[address.as_addr() as usize]
+    }
 }
 
 enum MemoryAccessType {
@@ -34,34 +226,100 @@ enum MemoryAccessType {
     Load,
 }
 
-struct Memory {
+#[inline]
+fn low_nibble(byte: word) -> u8 {
+    //no need to worry about endianness since it's a single byte
+    byte.native_value() & 0x0f
+}
+
+#[inline]
+fn high_nibble(byte: word) -> u8 {
+    (byte.native_value() & 0xf0) >> 4
+}
+
+/// Generic representation of the IO part of a system connected to a 6502 CPU
+trait IO6502 {
+    fn new_resetted() -> Self;
+
+    fn reset(&mut self);
+
+    fn push_program(&mut self, program: InstructionStream);
+
+    fn store(&mut self, address: doubleword, data: word);
+
+    fn load(&mut self, address: doubleword) -> word;
+}
+
+struct FamicomMemory {
     internal_ram: Ram,
     cart: Cartridge,
 }
 
-impl Memory {
-    pub fn store(&self, address: doubleword, data: word) {
+impl IO6502 for FamicomMemory {
+
+    fn new_resetted() -> Self {
+
+        let mut ret = Self {
+            internal_ram: Ram::new(),
+            cart: Cartridge::new_zeroed(),
+        };
+
+        ret.internal_ram.reset();
+        ret
+    }
+
+    fn reset(&mut self) {
+        self.internal_ram.reset();
+    }
+
+    fn push_program(&mut self, program: InstructionStream) {
+
+        self.cart.push_program(program);
+
+        
+    }
+
+    fn store(&mut self, address: doubleword, data: word) {
         let test_val = self.access(address, MemoryAccessType::Store, Some(data));
         debug_assert!(test_val.is_none());
     }
 
-    pub fn load(&self, address: doubleword) -> word {
-        self.access(address, MemoryAccessType::Load, None).unwrap()
+    fn load(&mut self, address: doubleword) -> word {
+        self.access(address, MemoryAccessType::Load, None).expect("Reading memory failed.")
     }
 
-    fn access(&self, address: doubleword, _tpe: MemoryAccessType, _data: Option<word>) -> Option<word> {
-        match address.native_value() {
-            0x0000..=0x1FFF => (), // RAM (repeated)
-            0x2000..=0x3FFF => (), // PPU (repeated)
-            0x4000..=0x4017 => (), // APU and IO
-            0x4018..=0x401F => (), // test Mode
-            0x4020..=0xFFFF => (), // cartridge
+
+}
+
+impl FamicomMemory {
+    fn access(&mut self, address: doubleword, tpe: MemoryAccessType, data: Option<word>) -> Option<word> {
+        let addr = address.native_value();
+        match addr {
+            0x0000..=0x1FFF => {
+                let real_address = address.native_value() % 0x800; // Clamp mirrored RAM addresses to the real ones
+                match tpe {
+                    MemoryAccessType::Load => Some(self.internal_ram.read(doubleword::from(real_address))),
+                    MemoryAccessType::Store => {
+                        self.internal_ram.write(doubleword::from(real_address), word::from(data.expect("access function got a store request without a value")));
+                        None
+                    },
+                }
+            }, // RAM (repeated)
+            0x2000..=0x3FFF => None, // PPU (repeated)
+            0x4000..=0x4017 => None, // APU and IO
+            0x4018..=0x401F => None, // test Mode
+            0x8000..=0xFFFF => { // cartridge
+                match tpe {
+                    MemoryAccessType::Load => Some(self.cart.read(doubleword::from(addr - 0x8000u16))),
+                    MemoryAccessType::Store => panic!("Error: trying to make a store on the cartridge ROM"),
+                }
+            }, 
+            _ => panic!(), // FIXME: complete range
         }
-        None
     }
 }
 
-struct System {
+struct System<T: IO6502> {
     a: word,
     x: word,
     y: word,
@@ -72,7 +330,7 @@ struct System {
     /// Processor status register
     p: word,
 
-    mem: Memory,
+    mem: T,
 }
 
 const C_BIT: u8 = (1 << 0);
@@ -88,7 +346,45 @@ enum AddSubMode {
     Sub,
 }
 
-impl System {
+impl<T: IO6502> System<T> {
+
+    fn new_resetted() -> Self {
+
+        let ret = Self {
+            a: word::zero(),
+            x: word::zero(),
+            y: word::zero(),
+            pc: doubleword::zero(),
+            s: word::zero(),
+            p: word::zero(),
+            mem: T::new_resetted(),
+        };
+        ret
+    }
+
+    /// Run program only for a specific number of instructions before returning (mostly intended for debug)
+    fn run_programm_for(&mut self, stream: InstructionStream, count: usize) {
+        self.mem.push_program(stream);
+
+        for x in 0..count {
+            println!("instrr count: {}", x);
+            self.advance_exec();
+        }
+    }
+
+
+    fn run_program(&mut self, stream: InstructionStream) {
+        self.mem.push_program(stream);
+    }
+
+    fn run(&mut self) {
+        // General idea: fetch next instruction, execute it, wait a certain amount of time, start over
+
+        loop {
+            self.advance_exec();
+            // sleep(1);
+        }
+    }
 
     #[inline]
     fn branch_on(&mut self, val: bool)  {
@@ -108,16 +404,7 @@ impl System {
         self.pc = doubleword::zero();
     }
 
-    #[inline]
-    fn low_nibble(byte: word) -> u8 {
-        //no need to worry about endianness since it's a single byte
-        byte.native_value() & 0x0f
-    }
-    
-    #[inline]
-    fn high_nibble(byte: word) -> u8 {
-        (byte.native_value() & 0xf0) >> 4
-    }
+
 
     #[inline]
     fn illegal_op(instr: word) {
@@ -125,23 +412,23 @@ impl System {
     }
 
     #[inline]
-    fn store(&self, address: doubleword, data: word) {
+    fn store(&mut self, address: doubleword, data: word) {
         self.mem.store(address, data);
     }
 
     #[inline]
-    fn load(&self, address: doubleword) -> word {
+    fn load(&mut self, address: doubleword) -> word {
         self.mem.load(address)
     }
 
     /// Load from memory, intepreting the value as a signed 16-bit address offset
-    fn load_offset(&self, address: doubleword) -> i16 {
+    fn load_offset(&mut self, address: doubleword) -> i16 {
         self.mem.load(address).native_value() as i16
 
     }
 
     #[inline]
-    fn load_doubleword(&self, address: doubleword) -> doubleword {
+    fn load_doubleword(&mut self, address: doubleword) -> doubleword {
         let lo = self.mem.load(address);
         let hi = self.mem.load(address + 1u8);
 
@@ -404,7 +691,7 @@ impl System {
 
     #[inline]
     /// Used for ind addressing type with X
-    fn indirect_x(&self) -> word {
+    fn indirect_x(&mut self) -> word {
         let addr = self.load((self.pc + 1u8).cl_add(self.x));
         let val = self.load(addr.as_doubleword());
         val
@@ -412,53 +699,58 @@ impl System {
 
     #[inline]
     /// Used for ind addressing type with Y
-    fn indirect_y(&self) -> word {
+    fn indirect_y(&mut self) -> word {
         let addr = self.load(self.pc + 1u8);
         let val = self.load(addr.as_doubleword()) + self.y;
         val
     }
 
     #[inline]
-    /// Convenience function to access # (immediate) value at pc + 1
-    fn immediate_value(&self) -> word {
-        // TODO: is it correct? Exact same as immediate
+    /// Convenience function to access # (immediate) value at pc + 1. Also used for zero-page addresses
+    fn immediate_value(&mut self) -> word {
         self.load(self.pc + 1u8)
     }
 
     #[inline]
     /// Loads word from zeropage address + value at X
-    fn zeropage_address(&self) -> doubleword {
-        self.load(self.pc + 1u8).as_doubleword()
+    fn zeropage_address(&mut self) -> doubleword {
+        self.immediate_value().as_doubleword()
     }
+
+    // TODO: check if X, Y offset in zero page is offset for address or for value at that address
 
     #[inline]
     /// Loads word from zeropage address + value at X
-    fn zeropage_address_x(&self) -> doubleword {
-        self.load((self.pc + 1u8) + self.x).as_doubleword()
-    }
-
-    #[inline]
-    /// Loads word from zeropage address + value at X
-    fn zeropage_address_y(&self) -> doubleword {
-        self.load((self.pc + 1u8) + self.y).as_doubleword()
-    }
-
-    #[inline]
-    /// Used for loading the value for zpg instructions
-    fn zeropage_value(&self) -> word {
-        self.load(self.zeropage_address())
-    }
-
-    #[inline]
-    /// Loads word from zeropage address + value at X
-    fn zeropage_value_x(&self) -> word {
-        self.load(self.zeropage_address_x())
+    fn zeropage_address_x(&mut self) -> doubleword {
+        self.zeropage_address() + self.x.as_doubleword()
     }
 
     #[inline]
     /// Loads word from zeropage address + value at Y
-    fn zeropage_value_y(&self) -> word {
-        self.load(self.zeropage_address_y())
+    fn zeropage_address_y(&mut self) -> doubleword {
+        self.zeropage_address() + self.x.as_doubleword()
+    }
+
+    #[inline]
+    /// Used for loading the value for zpg instructions
+    fn zeropage_value(&mut self) -> word {
+        let addr = self.zeropage_address();
+        self.load(addr)
+    }
+
+    #[inline]
+    /// Loads word from zeropage immediate + value at X
+    fn zeropage_value_x(&mut self) -> word {
+
+        let addr = self.zeropage_address_x();
+        self.load(addr)
+    }
+
+    #[inline]
+    /// Loads word from zeropage immediate + value at Y
+    fn zeropage_value_y(&mut self) -> word {
+        let addr = self.zeropage_address_y();
+        self.load(addr)
     }
 
     #[inline]
@@ -611,9 +903,9 @@ impl System {
 
     fn exec(&mut self, instr: word) {
         // Matrix evaluation inspired by https://www.masswerk.at/6502/6502_instruction_set.html
-        match Self::low_nibble(instr) {
+        match low_nibble(instr) {
             0x0 => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // BRK
                         unimplemented!();
                     },
@@ -621,40 +913,28 @@ impl System {
                         unimplemented!();
                     },
                     0x2 => { // JSR
-                        self.push_doubleword(self.pc);
+                        // Push (Next Instruction Address) -1 to stay canoncial with original implementation.
+                        // RTS will then go back to that address + 1
+                        self.push_doubleword(self.pc + 2u8); 
                         let lo = self.mem.load(self.pc + 1u8);
                         let hi = self.mem.load(self.pc + 2u8);
                         self.pc = doubleword::from_words(hi, lo);
                     },
                     0x3 => { // BMI
-                        if self.N() {
-                            self.relative_jump();
-                        }
-                        else {
-                            self.pc = self.pc + 2u8;
-                        }
+                        self.branch_on(self.N());
                     },
                     0x4 => { // RTI
                         unimplemented!();
                     },
                     0x5 => { // BVC
-                        if !self.V() {
-                             //TODO: might want to make of this pattern a function or macro
-                        }
-                        else {
-                            self.pc = self.pc + 2u8;
-                        }
+                        self.branch_on(!self.V());
                     },
                     0x6 => { // RTS
                         self.pc = self.pull_doubleword();
+                        self.advance_pc_1();
                     },
                     0x7 => { // BVS
-                        if self.V() {
-                            self.relative_jump();
-                        }
-                        else {
-                            self.advance_pc_2();
-                        }
+                        self.branch_on(self.V());
                     },
                     0x8 => { // Illegal
                         unimplemented!();
@@ -691,7 +971,7 @@ impl System {
             },
             0x1 => { // ind addressing
                 // TODO: factor out common code
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ORA X
                         let val = self.indirect_x();
                         self.a = self.a | val;
@@ -731,16 +1011,20 @@ impl System {
                         self.add_carry(val);
                     },
                     0x8 => { // STA X
-                        self.store(self.indirect_x().as_doubleword(), self.a);
+                        let addr = self.indirect_x().as_doubleword();
+                        self.store(addr, self.a);
                     },
                     0x9 => { // STA Y
-                        self.store(self.indirect_y().as_doubleword(), self.a);
+                        let addr = self.indirect_y().as_doubleword();
+                        self.store(addr, self.a);
                     },
                     0xA => { // LDA X
-                        self.a = self.load(self.indirect_x().as_doubleword());
+                        let addr = self.indirect_x().as_doubleword();
+                        self.a = self.load(addr);
                     },
                     0xB => { // LDA Y
-                        self.a = self.load(self.indirect_y().as_doubleword());
+                        let addr = self.indirect_y().as_doubleword();
+                        self.a = self.load(addr);
                     },
                     0xC => { // CMP X
                         let val = self.indirect_x();
@@ -751,10 +1035,12 @@ impl System {
                         self.compare(self.a, val);
                     },
                     0xE => { // SBC X
-                        self.sbc(self.indirect_x());
+                        let addr = self.indirect_x();
+                        self.sbc(addr);
                     },
                     0xF => { // SBC Y
-                        self.sbc(self.indirect_y());
+                        let addr = self.indirect_y();
+                        self.sbc(addr);
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
@@ -762,7 +1048,7 @@ impl System {
                 self.advance_pc_2();
             },
             0x2 => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -817,7 +1103,7 @@ impl System {
                 }
             },
             0x3 => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -871,7 +1157,7 @@ impl System {
                 }
             },
             0x4 => { // zpg
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -886,6 +1172,7 @@ impl System {
                         self.update_V(v_flag);
                         let and = self.a & val;
                         self.update_Z(and.native_value() == 0);
+                        self.advance_pc_2();
                     },
                     0x3 => { // Illegal
                         unimplemented!();
@@ -903,27 +1190,39 @@ impl System {
                         unimplemented!();
                     },
                     0x8 => { // STY zpg
-                        self.store(self.zeropage_value().as_doubleword(), self.y);
+                        let addr = self.zeropage_address();
+                        self.store(addr, self.y);
+                        self.advance_pc_2();
                     },
                     0x9 => { // STY zpg X
-                        self.store(self.zeropage_value_x().as_doubleword(), self.y);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, self.y);
+                        self.advance_pc_2();
                     },
                     0xA => { // LDY zpg
-                        self.y = self.load(self.zeropage_value().as_doubleword());
+                        let addr = self.zeropage_address();
+                        self.y = self.load(addr);
                         self.update_flags_zn(self.y);
+                        self.advance_pc_2();
                     },
                     0xB => { // LDY zpg X
-                        self.y = self.load(self.zeropage_value_x().as_doubleword());
+                        let val = self.zeropage_value_x();
+                        self.y = val;
                         self.update_flags_zn(self.y);
+                        self.advance_pc_2();
                     },
                     0xC => { // CPY zpg
-                        self.compare(self.y, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.compare(self.y, val);
+                        self.advance_pc_2();
                     },
                     0xD => { // Illegal
                         unimplemented!();
                     },
                     0xE => { // CPX zpg
-                        self.compare(self.x, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.compare(self.x, val);
+                        self.advance_pc_2();
                     },
                     0xF => { // Illegal
                         unimplemented!();
@@ -933,106 +1232,149 @@ impl System {
                 }
             },
             0x5 => { // zpg
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ORA
-                        self.a = self.or(self.a, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.a = self.or(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x1 => { // ORA X
-                        self.a = self.or(self.a, self.zeropage_value_x());
+                        let val = self.zeropage_value_x();
+                        self.a = self.or(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x2 => { // AND
-                        self.a = self.and(self.a, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.a = self.and(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x3 => { // AND X
-                        self.a = self.and(self.a, self.zeropage_value_x());
+                        let addr = self.zeropage_value_x();
+                        self.a = self.and(self.a, addr);
+                        self.advance_pc_2();
                     },
                     0x4 => { // EOR
-                        self.a = self.eor(self.a, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.a = self.eor(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x5 => { // EOR X
-                        self.a = self.eor(self.a, self.zeropage_value_x());
+                        let val = self.zeropage_value_x();
+                        self.a = self.eor(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x6 => { // ADC
-                        self.a = self.add_carry(self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.a = self.add_carry(val);
+                        self.advance_pc_2();
                     },
                     0x7 => { // ADC X
-                        self.a = self.add_carry(self.zeropage_value_x());
+                        let val = self.zeropage_value_x();
+                        self.a = self.add_carry(val);
+                        self.advance_pc_2();
                     },
                     0x8 => { // STA
-                        self.store(self.zeropage_value().as_doubleword(), self.a);
+                        let addr = self.zeropage_address();
+                        self.store(addr, self.a);
+                        self.advance_pc_2();
                     },
                     0x9 => { // STA X
-                        self.store(self.zeropage_value_x().as_doubleword(), self.a);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, self.a);
+                        self.advance_pc_2();
                     },
                     0xA => { // LDA
-                        self.a = self.load(self.zeropage_value().as_doubleword());
+                        let val = self.zeropage_value();
+                        self.a = val;
+                        self.advance_pc_2();
                     },
                     0xB => { // LDA X
-                        self.a = self.load(self.zeropage_value_x().as_doubleword());
+                        let val = self.zeropage_value_x();
+                        self.a = val;
+                        self.advance_pc_2();
                     },
                     0xC => { // CMP
-                        self.compare(self.a, self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.compare(self.a, val);
+                        self.advance_pc_2();
                     },
                     0xD => { // CMP X
-                        self.compare(self.a, self.zeropage_value_x());
+                        let val = self.zeropage_value_x();
+                        self.compare(self.a, val);
+                        self.advance_pc_2();
                     },
                     0xE => { // SBC
-                        self.a = self.sub_carry(self.zeropage_value());
+                        let val = self.zeropage_value();
+                        self.a = self.sub_carry(val);
+                        self.advance_pc_2();
                     },
                     0xF => { // SBC X
-                        self.a = self.sub_carry(self.zeropage_value_x());
+                        let val = self.zeropage_value_x();
+                        self.a = self.sub_carry(val);
+                        self.advance_pc_2();
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
                 }
             },
             0x6 => { // zpg
-                match Self::high_nibble(instr) {
+                // TODO: factor out common code here(e.g. self.zeropage_value())
+                match high_nibble(instr) {
                     0x0 => { // ASL
                         let zpg = self.zeropage_value();
                         let new_val = self.asl(zpg);
-                        self.store(self.zeropage_address(), new_val);
+                        let addr = self.zeropage_address();
+                        self.store(addr, new_val);
                     },
                     0x1 => { // ASL X
                         let zpg = self.zeropage_value_x();
                         let new_val = self.asl(zpg);
-                        self.store(self.zeropage_address_x(), new_val);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, new_val);
                     },
                     0x2 => { // ROL
                         let zpg = self.zeropage_value();
                         let new_val = self.rol(zpg);
-                        self.store(self.zeropage_address(), new_val);
+                        let addr = self.zeropage_address();
+                        self.store(addr, new_val);
                     },
                     0x3 => { // ROL X
                         let zpg = self.zeropage_value_x();
                         let new_val = self.rol(zpg);
-                        self.store(self.zeropage_address_x(), new_val);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, new_val);
                     },
                     0x4 => { // LSR
                         let zpg = self.zeropage_value();
                         let new_val = self.lsr(zpg);
-                        self.store(self.zeropage_address(), new_val);
+                        let addr = self.zeropage_address();
+                        self.store(addr, new_val);
                     },
                     0x5 => { // LSR X
                         let zpg = self.zeropage_value_x();
                         let new_val = self.lsr(zpg);
-                        self.store(self.zeropage_address_x(), new_val);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, new_val);
                     },
                     0x6 => { // ROR
                         let zpg = self.zeropage_value();
                         let new_val = self.ror(zpg);
-                        self.store(self.zeropage_address(), new_val);
+                        let addr = self.zeropage_address();
+                        self.store(addr, new_val);
                     },
                     0x7 => { // ROR X
                         let zpg = self.zeropage_value_x();
                         let new_val = self.ror(zpg);
-                        self.store(self.zeropage_address_x(), new_val);
+                        let addr = self.zeropage_address_x();
+                        self.store(addr, new_val);
                     },
                     0x8 => { // STX
-                        self.store(self.zeropage_address(), self.x);
+                        let addr = self.zeropage_address();
+                        self.store(addr, self.x);
                     },
                     0x9 => { // STX Y
-                        self.store(self.zeropage_address_y(), self.x);
+                        let addr = self.zeropage_address_y();
+                        self.store(addr, self.x);
                     },
                     0xA => { // LDX
                         self.x = self.zeropage_value();
@@ -1041,23 +1383,31 @@ impl System {
                         self.x = self.zeropage_value_y();
                     },
                     0xC => { // DEC
-                        self.store(self.zeropage_address(), self.zeropage_value() - 1);
+                        let addr = self.zeropage_address();
+                        let val = self.zeropage_value();
+                        self.store(addr, val - 1);
                     },
                     0xD => { // DEC X
-                        self.store(self.zeropage_address_x(), self.zeropage_value_x() - 1);
+                        let addr = self.zeropage_address_x();
+                        let val = self.zeropage_value_x();
+                        self.store(addr, val - 1);
                     },
                     0xE => { // INC
-                        self.store(self.zeropage_address(), self.zeropage_value() + 1);
+                        let addr = self.zeropage_address();
+                        let val = self.zeropage_value();
+                        self.store(addr, val + 1);
                     },
                     0xF => { // INC X
-                        self.store(self.zeropage_address_x(), self.zeropage_value_x() + 1);
+                        let addr = self.zeropage_address_x();
+                        let val = self.zeropage_value_x();
+                        self.store(addr, val + 1);
                     },
                     _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
 
                 }
             },
             0x7 => { // ALL ILLEGAL
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -1111,7 +1461,7 @@ impl System {
                 }
             },
             0x8 => { // impl
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // PHP
                         self.push_word(self.p);
                     },
@@ -1165,16 +1515,20 @@ impl System {
                 }
             },
             0x9 => { // abs
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ORA #
-                        self.a = self.or(self.a, self.immediate_value());
+                        let val = self.immediate_value();
+                        self.a = self.or(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x1 => { // ORA Y
-                        self.a = self.or(self.a, self.immediate_value());
+                        self.a = self.or(self.a, self.y);
                         unimplemented!();
                     },
                     0x2 => { // AND #
-                        unimplemented!();
+                        let val = self.immediate_value();
+                        self.a = self.and(self.a, val);
+                        self.advance_pc_2();
                     },
                     0x3 => { // AND Y
                         unimplemented!();
@@ -1220,7 +1574,7 @@ impl System {
                 }
             },
             0xA => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ASL A
                         unimplemented!();
                     },
@@ -1274,7 +1628,7 @@ impl System {
                 }
             },
             0xB => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -1328,7 +1682,7 @@ impl System {
                 }
             },
             0xC => { // abs
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
@@ -1382,7 +1736,7 @@ impl System {
                 }
             },
             0xD => { // abs
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ORA
                         unimplemented!();
                     },
@@ -1436,7 +1790,7 @@ impl System {
                 }
             },
             0xE => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // ASL
                         unimplemented!();
                     },
@@ -1490,7 +1844,7 @@ impl System {
                 }
             },
             0xF => {
-                match Self::high_nibble(instr) {
+                match high_nibble(instr) {
                     0x0 => { // Illegal
                         unimplemented!();
                     },
