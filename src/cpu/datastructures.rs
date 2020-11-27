@@ -275,6 +275,10 @@ impl word {
         let val = self.native_value();
         self.value = byte | (val & 0b11111100u8);
     }
+
+    pub fn as_i16(self) -> i16 {
+        self.native_value() as i16
+    }
 }
 
 impl ClAdd<Self> for word {
@@ -513,6 +517,10 @@ impl doubleword {
         Self {
             value: 0,
         }
+    }
+
+    pub fn as_i16(self) -> i16 {
+        self.native_value() as i16
     }
 }
 

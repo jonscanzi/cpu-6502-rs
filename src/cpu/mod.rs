@@ -438,7 +438,7 @@ impl<T: IO6502> System<T> {
     #[inline]
     fn advance_exec(&mut self) {
         let next_instr = self.mem.load(self.pc);
-        self.exec(next_instr)
+        self.alternate_exec(next_instr)
     }
 
     #[inline]
@@ -690,17 +690,36 @@ impl<T: IO6502> System<T> {
     // =============== HELPERS FUNCTIONS FOR RETRIEVING VALUES ===============
 
     #[inline]
+    fn indirect_address(&mut self) -> doubleword {
+        let (hi, lo) = (self.load(self.pc + 2u16), self.load(self.pc + 1u16));
+        doubleword::from_words(hi, lo)
+    }
+
+    #[inline]
+    /// Loads word from zeropage immediate + value at Y
+    fn indirect_value(&mut self) -> word {
+        let addr = self.indirect_address();
+        let val = self.load(addr);
+        val
+    }
+
+    #[inline]
+    fn indirect_address_x(&mut self) -> doubleword {
+        self.immediate_value().cl_add(self.x).as_doubleword()
+    }
+
+    #[inline]
     /// Used for ind addressing type with X
-    fn indirect_x(&mut self) -> word {
-        let addr = self.load((self.pc + 1u8).cl_add(self.x));
-        let val = self.load(addr.as_doubleword());
+    fn indirect_value_x(&mut self) -> word {
+        let addr = self.indirect_address_x();
+        let val = self.load(addr);
         val
     }
 
     #[inline]
     /// Used for ind addressing type with Y
-    fn indirect_y(&mut self) -> word {
-        let addr = self.load(self.pc + 1u8);
+    fn indirect_value_y(&mut self) -> word {
+        let addr = self.immediate_value();
         let val = self.load(addr.as_doubleword()) + self.y;
         val
     }
@@ -709,6 +728,10 @@ impl<T: IO6502> System<T> {
     /// Convenience function to access # (immediate) value at pc + 1. Also used for zero-page addresses
     fn immediate_value(&mut self) -> word {
         self.load(self.pc + 1u8)
+    }
+
+    fn immediate_address(&mut self) -> doubleword {
+        self.load(self.pc + 1u8).as_doubleword()
     }
 
     #[inline]
@@ -754,6 +777,11 @@ impl<T: IO6502> System<T> {
     }
 
     #[inline]
+    fn relative_value(&mut self) -> doubleword {
+        self.pc + (self.immediate_value().as_i16())
+    }
+
+    #[inline]
     fn update_flags_zn(&mut self, val: word) {
 
         let val = val.native_value_signed();
@@ -774,8 +802,18 @@ impl<T: IO6502> System<T> {
 
     #[inline]
     /// 
-    fn absolute_value(&self) -> word {
-        unimplemented!();
+    // FIXME: Test it
+    fn absolute_address(&mut self) -> doubleword {
+        let hi = self.load(self.pc + 2u16);
+        let lo = self.load(self.pc + 1u16);
+        doubleword::from_words(hi, lo)
+    }
+
+    #[inline]
+    /// 
+    fn absolute_value(&mut self) -> word {
+        let addr = self.absolute_address();
+        self.load(addr)
     }
 
     // =============== CONVENIENCE FUNCTIONS / MACROS FOR COMPUTATIONS ===============
@@ -901,1005 +939,1353 @@ impl<T: IO6502> System<T> {
         ret
     }
 
-    fn exec(&mut self, instr: word) {
-        // Matrix evaluation inspired by https://www.masswerk.at/6502/6502_instruction_set.html
-        match low_nibble(instr) {
-            0x0 => {
-                match high_nibble(instr) {
-                    0x0 => { // BRK
-                        unimplemented!();
-                    },
-                    0x1 => { // BPL
-                        unimplemented!();
-                    },
-                    0x2 => { // JSR
-                        // Push (Next Instruction Address) -1 to stay canoncial with original implementation.
-                        // RTS will then go back to that address + 1
-                        self.push_doubleword(self.pc + 2u8); 
-                        let lo = self.mem.load(self.pc + 1u8);
-                        let hi = self.mem.load(self.pc + 2u8);
-                        self.pc = doubleword::from_words(hi, lo);
-                    },
-                    0x3 => { // BMI
-                        self.branch_on(self.N());
-                    },
-                    0x4 => { // RTI
-                        unimplemented!();
-                    },
-                    0x5 => { // BVC
-                        self.branch_on(!self.V());
-                    },
-                    0x6 => { // RTS
-                        self.pc = self.pull_doubleword();
-                        self.advance_pc_1();
-                    },
-                    0x7 => { // BVS
-                        self.branch_on(self.V());
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // BCC
-                        self.branch_on(!self.C());
-                    },
-                    0xA => { // LDY #
-                        let addr = self.load(self.pc + 1u8);
-                        self.y = self.load(addr.as_doubleword());
-                    },
-                    0xB => { // BCS
-                        self.branch_on(self.C());
-                    },
-                    0xC => { // CPY #
-                        let rhs = self.load(self.pc + 1u8);
-                        self.compare(self.y, rhs);
-                        self.advance_pc_2();
-                    },
-                    0xD => { // BNE
-                        self.branch_on(!self.Z());
-                    },
-                    0xE => { // CPX #
-                        let rhs = self.load(self.pc + 1u8);
-                        self.compare(self.x, rhs);
-                        self.advance_pc_2();
-                    },
-                    0xF => { // BEQ rel
-                        self.branch_on(self.Z());
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+    // Re-implementation of decoding, using the aaabbbcc layout of opcodes
+    fn alternate_exec(&mut self, instr: word) {
+        
+        let mut operand: Option<word> = None;
+        let mut address: Option<doubleword>  = None;
+        let mut pc_offset = 0u16;
 
+        // Compute operand
+        match instr.bbb() {
+            0 => {
+                match instr.cc() {
+                    0 => {
+                        match instr.aaa() {
+                            1 => {
+                                operand = Some(self.absolute_value());
+                                address = Some(self.absolute_address());
+                                pc_offset += 3;
+                            },
+                            5 | 6 | 7 => {
+                                operand = Some(self.immediate_value());
+                                address = Some(self.immediate_address());
+                                pc_offset += 2;
+                            },
+                            _ => (),
+                        }
+                    }
+                    1 => { // all X, ind
+                        operand = Some(self.indirect_value_x());
+                        address = Some(self.indirect_address_x());
+                        pc_offset += 3;
+                    }
+                    2 => {
+                        if instr.aaa() == 5 {
+                            operand = Some(self.immediate_value());
+                            address = Some(self.immediate_address());
+                            pc_offset += 2;
+                        }
+                    }
+                    _ => unimplemented!(),
                 }
             },
-            0x1 => { // ind addressing
-                // TODO: factor out common code
-                match high_nibble(instr) {
-                    0x0 => { // ORA X
-                        let val = self.indirect_x();
-                        self.a = self.a | val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x1 => { // ORA Y
-                        let val = self.indirect_y();
-                        self.a = self.a | val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x2 => { // AND X
-                        let val = self.indirect_x();
-                        self.a = self.a & val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x3 => { // AND Y
-                        let val = self.indirect_y();
-                        self.a = self.a & val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x4 => { // EOR X
-                        let val = self.indirect_x();
-                        self.a = self.a ^ val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x5 => { // EOR Y
-                        let val = self.indirect_y();
-                        self.a = self.a ^ val;
-                        self.update_flags_zn(self.a);
-                    },
-                    0x6 => { // ADC X
-                        let val = self.indirect_x();
-                        self.add_carry(val);
-                    },
-                    0x7 => { // ADC Y
-                        let val = self.indirect_y();
-                        self.add_carry(val);
-                    },
-                    0x8 => { // STA X
-                        let addr = self.indirect_x().as_doubleword();
-                        self.store(addr, self.a);
-                    },
-                    0x9 => { // STA Y
-                        let addr = self.indirect_y().as_doubleword();
-                        self.store(addr, self.a);
-                    },
-                    0xA => { // LDA X
-                        let addr = self.indirect_x().as_doubleword();
-                        self.a = self.load(addr);
-                    },
-                    0xB => { // LDA Y
-                        let addr = self.indirect_y().as_doubleword();
-                        self.a = self.load(addr);
-                    },
-                    0xC => { // CMP X
-                        let val = self.indirect_x();
-                        self.compare(self.a, val);
-                    },
-                    0xD => { // CMP Y
-                        let val = self.indirect_y();
-                        self.compare(self.a, val);
-                    },
-                    0xE => { // SBC X
-                        let addr = self.indirect_x();
-                        self.sbc(addr);
-                    },
-                    0xF => { // SBC Y
-                        let addr = self.indirect_y();
-                        self.sbc(addr);
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+            1 => { // zpg
+                // TODO: some aaa, cc combinations should not do anything
+                operand = Some(self.zeropage_value());
+                address = Some(self.zeropage_address());
+                pc_offset += 2;
+            }
 
+            2 => { // imm (#) or implied
+                match instr.cc() {
+                    1 => { // TODO: one aaa value should not do anything
+                        operand = Some(self.immediate_value());
+                        address = Some(self.immediate_address());
+                        pc_offset += 2;
+                    }, 
+                    
+                    _ => (),
                 }
-                self.advance_pc_2();
-            },
-            0x2 => {
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // LDX #
-                        self.x = self.immediate_value();
-                        self.advance_pc_2();
-                    },
-                    0xB => { // Illegal
-                        unimplemented!();
-                    },
-                    0xC => { // Illegal
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // Illegal
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+            }
 
-                }
-            },
-            0x3 => {
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // Illegal
-                        unimplemented!();
-                    },
-                    0xB => { // Illegal
-                        unimplemented!();
-                    },
-                    0xC => { // Illegal
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // Illegal
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+            3 => { // abs (or ind)
+                
 
+                if instr.aaa() == 2 && instr.cc() == 0 { // only indirect instruction with b == 3
+                    operand = Some(self.indirect_value());
+                    address = Some(self.indirect_address());
+                    pc_offset += 3;
+                } else {
+                    operand = Some(self.absolute_value());
+                    address = Some(self.absolute_address());
+                    pc_offset += 3;
                 }
-            },
-            0x4 => { // zpg
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // BIT
-                        let val = self.load(self.pc + 1u8);
-                        let n_flag = (val & 0b10000000).native_value() != 0;
-                        let v_flag = (val & 0b01000000).native_value() != 0;
-                        self.update_N(n_flag);
-                        self.update_V(v_flag);
-                        let and = self.a & val;
-                        self.update_Z(and.native_value() == 0);
-                        self.advance_pc_2();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // STY zpg
-                        let addr = self.zeropage_address();
-                        self.store(addr, self.y);
-                        self.advance_pc_2();
-                    },
-                    0x9 => { // STY zpg X
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, self.y);
-                        self.advance_pc_2();
-                    },
-                    0xA => { // LDY zpg
-                        let addr = self.zeropage_address();
-                        self.y = self.load(addr);
-                        self.update_flags_zn(self.y);
-                        self.advance_pc_2();
-                    },
-                    0xB => { // LDY zpg X
-                        let val = self.zeropage_value_x();
-                        self.y = val;
-                        self.update_flags_zn(self.y);
-                        self.advance_pc_2();
-                    },
-                    0xC => { // CPY zpg
-                        let val = self.zeropage_value();
-                        self.compare(self.y, val);
-                        self.advance_pc_2();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // CPX zpg
-                        let val = self.zeropage_value();
-                        self.compare(self.x, val);
-                        self.advance_pc_2();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+            }
 
+            4 => {
+                match instr.cc() {
+                    1 => { // ind, Y
+                        operand = Some(self.indirect_value_x());
+                        address = Some(self.indirect_address_x());
+                        pc_offset += 3;
+                        unimplemented!();
+                    }
+                    _ => (),
                 }
-            },
-            0x5 => { // zpg
-                match high_nibble(instr) {
-                    0x0 => { // ORA
-                        let val = self.zeropage_value();
-                        self.a = self.or(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x1 => { // ORA X
-                        let val = self.zeropage_value_x();
-                        self.a = self.or(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x2 => { // AND
-                        let val = self.zeropage_value();
-                        self.a = self.and(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x3 => { // AND X
-                        let addr = self.zeropage_value_x();
-                        self.a = self.and(self.a, addr);
-                        self.advance_pc_2();
-                    },
-                    0x4 => { // EOR
-                        let val = self.zeropage_value();
-                        self.a = self.eor(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x5 => { // EOR X
-                        let val = self.zeropage_value_x();
-                        self.a = self.eor(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x6 => { // ADC
-                        let val = self.zeropage_value();
-                        self.a = self.add_carry(val);
-                        self.advance_pc_2();
-                    },
-                    0x7 => { // ADC X
-                        let val = self.zeropage_value_x();
-                        self.a = self.add_carry(val);
-                        self.advance_pc_2();
-                    },
-                    0x8 => { // STA
-                        let addr = self.zeropage_address();
-                        self.store(addr, self.a);
-                        self.advance_pc_2();
-                    },
-                    0x9 => { // STA X
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, self.a);
-                        self.advance_pc_2();
-                    },
-                    0xA => { // LDA
-                        let val = self.zeropage_value();
-                        self.a = val;
-                        self.advance_pc_2();
-                    },
-                    0xB => { // LDA X
-                        let val = self.zeropage_value_x();
-                        self.a = val;
-                        self.advance_pc_2();
-                    },
-                    0xC => { // CMP
-                        let val = self.zeropage_value();
-                        self.compare(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0xD => { // CMP X
-                        let val = self.zeropage_value_x();
-                        self.compare(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0xE => { // SBC
-                        let val = self.zeropage_value();
-                        self.a = self.sub_carry(val);
-                        self.advance_pc_2();
-                    },
-                    0xF => { // SBC X
-                        let val = self.zeropage_value_x();
-                        self.a = self.sub_carry(val);
-                        self.advance_pc_2();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0x6 => { // zpg
-                // TODO: factor out common code here(e.g. self.zeropage_value())
-                match high_nibble(instr) {
-                    0x0 => { // ASL
-                        let zpg = self.zeropage_value();
-                        let new_val = self.asl(zpg);
-                        let addr = self.zeropage_address();
-                        self.store(addr, new_val);
-                    },
-                    0x1 => { // ASL X
-                        let zpg = self.zeropage_value_x();
-                        let new_val = self.asl(zpg);
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, new_val);
-                    },
-                    0x2 => { // ROL
-                        let zpg = self.zeropage_value();
-                        let new_val = self.rol(zpg);
-                        let addr = self.zeropage_address();
-                        self.store(addr, new_val);
-                    },
-                    0x3 => { // ROL X
-                        let zpg = self.zeropage_value_x();
-                        let new_val = self.rol(zpg);
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, new_val);
-                    },
-                    0x4 => { // LSR
-                        let zpg = self.zeropage_value();
-                        let new_val = self.lsr(zpg);
-                        let addr = self.zeropage_address();
-                        self.store(addr, new_val);
-                    },
-                    0x5 => { // LSR X
-                        let zpg = self.zeropage_value_x();
-                        let new_val = self.lsr(zpg);
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, new_val);
-                    },
-                    0x6 => { // ROR
-                        let zpg = self.zeropage_value();
-                        let new_val = self.ror(zpg);
-                        let addr = self.zeropage_address();
-                        self.store(addr, new_val);
-                    },
-                    0x7 => { // ROR X
-                        let zpg = self.zeropage_value_x();
-                        let new_val = self.ror(zpg);
-                        let addr = self.zeropage_address_x();
-                        self.store(addr, new_val);
-                    },
-                    0x8 => { // STX
-                        let addr = self.zeropage_address();
-                        self.store(addr, self.x);
-                    },
-                    0x9 => { // STX Y
-                        let addr = self.zeropage_address_y();
-                        self.store(addr, self.x);
-                    },
-                    0xA => { // LDX
-                        self.x = self.zeropage_value();
-                    },
-                    0xB => { // LDX Y
-                        self.x = self.zeropage_value_y();
-                    },
-                    0xC => { // DEC
-                        let addr = self.zeropage_address();
-                        let val = self.zeropage_value();
-                        self.store(addr, val - 1);
-                    },
-                    0xD => { // DEC X
-                        let addr = self.zeropage_address_x();
-                        let val = self.zeropage_value_x();
-                        self.store(addr, val - 1);
-                    },
-                    0xE => { // INC
-                        let addr = self.zeropage_address();
-                        let val = self.zeropage_value();
-                        self.store(addr, val + 1);
-                    },
-                    0xF => { // INC X
-                        let addr = self.zeropage_address_x();
-                        let val = self.zeropage_value_x();
-                        self.store(addr, val + 1);
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0x7 => { // ALL ILLEGAL
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // Illegal
-                        unimplemented!();
-                    },
-                    0xB => { // Illegal
-                        unimplemented!();
-                    },
-                    0xC => { // Illegal
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // Illegal
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0x8 => { // impl
-                match high_nibble(instr) {
-                    0x0 => { // PHP
-                        self.push_word(self.p);
-                    },
-                    0x1 => { // CLC
-                        self.clear_C();
-                    },
-                    0x2 => { // PLP
-                        self.p = self.pull_word();
-                    },
-                    0x3 => { // SEC
-                        self.set_C();
-                    },
-                    0x4 => { // PHA
-                        self.push_word(self.a);
-                    },
-                    0x5 => { // CLI
-                        self.clear_I();
-                    },
-                    0x6 => { // PLA
-                        self.a = self.pull_word();
-                    },
-                    0x7 => { // SEI
-                        self.set_I();
-                    },
-                    0x8 => { // DEY
-                        self.y = self.y - 1;
-                    },
-                    0x9 => { // TYA
-                        self.a = self.y;
-                    },
-                    0xA => { // TAY
-                        self.y = self.a;
-                    },
-                    0xB => { // CLV
-                        self.clear_V()
-                    },
-                    0xC => { // INY
-                        self.y = self.y + 1;
-                    },
-                    0xD => { // CLD
-                        // Unused on NES
-                    },
-                    0xE => { // INX
-                        self.x = self.x + 1;
-                    },
-                    0xF => { // SED
-                        // Unused on NES
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0x9 => { // abs
-                match high_nibble(instr) {
-                    0x0 => { // ORA #
-                        let val = self.immediate_value();
-                        self.a = self.or(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x1 => { // ORA Y
-                        self.a = self.or(self.a, self.y);
-                        unimplemented!();
-                    },
-                    0x2 => { // AND #
-                        let val = self.immediate_value();
-                        self.a = self.and(self.a, val);
-                        self.advance_pc_2();
-                    },
-                    0x3 => { // AND Y
-                        unimplemented!();
-                    },
-                    0x4 => { // EOR #
-                        unimplemented!();
-                    },
-                    0x5 => { // EOR Y
-                        unimplemented!();
-                    },
-                    0x6 => { // ADC #
-                        unimplemented!();
-                    },
-                    0x7 => { // ADC Y
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // STA Y
-                        unimplemented!();
-                    },
-                    0xA => { // LDA #
-                        unimplemented!();
-                    },
-                    0xB => { // LDA Y
-                        unimplemented!();
-                    },
-                    0xC => { // CMP #
-                        unimplemented!();
-                    },
-                    0xD => { // CMP Y
-                        unimplemented!();
-                    },
-                    0xE => { // SBS #
-                        unimplemented!();
-                    },
-                    0xF => { // SBS Y
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xA => {
-                match high_nibble(instr) {
-                    0x0 => { // ASL A
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // ROL A
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // LSR A
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // ROR A
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // TXA
-                        unimplemented!();
-                    },
-                    0x9 => { // TXS
-                        unimplemented!();
-                    },
-                    0xA => { // TAX
-                        unimplemented!();
-                    },
-                    0xB => { // TSX
-                        unimplemented!();
-                    },
-                    0xC => { // DEX
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // NOP
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xB => {
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // Illegal
-                        unimplemented!();
-                    },
-                    0xB => { // Illegal
-                        unimplemented!();
-                    },
-                    0xC => { // Illegal
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // Illegal
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xC => { // abs
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // BIT
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // JMP
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // JMP ind
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // STY
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // LDY
-                        unimplemented!();
-                    },
-                    0xB => { // LDY X
-                        unimplemented!();
-                    },
-                    0xC => { // CPY
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // CPX
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xD => { // abs
-                match high_nibble(instr) {
-                    0x0 => { // ORA
-                        unimplemented!();
-                    },
-                    0x1 => { // ORA X
-                        unimplemented!();
-                    },
-                    0x2 => { // AND
-                        unimplemented!();
-                    },
-                    0x3 => { // AND X
-                        unimplemented!();
-                    },
-                    0x4 => { // EOR
-                        unimplemented!();
-                    },
-                    0x5 => { // EOR X
-                        unimplemented!();
-                    },
-                    0x6 => { // ADC
-                        unimplemented!();
-                    },
-                    0x7 => { // ADC X
-                        unimplemented!();
-                    },
-                    0x8 => { // STA
-                        unimplemented!();
-                    },
-                    0x9 => { // STA X
-                        unimplemented!();
-                    },
-                    0xA => { // LDA
-                        unimplemented!();
-                    },
-                    0xB => { // LDA X
-                        unimplemented!();
-                    },
-                    0xC => { // CMP
-                        unimplemented!();
-                    },
-                    0xD => { //  CMP X
-                        unimplemented!();
-                    },
-                    0xE => { // SBC
-                        unimplemented!();
-                    },
-                    0xF => { // SBC X
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xE => {
-                match high_nibble(instr) {
-                    0x0 => { // ASL
-                        unimplemented!();
-                    },
-                    0x1 => { // ASL X
-                        unimplemented!();
-                    },
-                    0x2 => { // ROL
-                        unimplemented!();
-                    },
-                    0x3 => { // ROL X
-                        unimplemented!();
-                    },
-                    0x4 => { // LSR
-                        unimplemented!();
-                    },
-                    0x5 => { // LSR X
-                        unimplemented!();
-                    },
-                    0x6 => { // ROR
-                        unimplemented!();
-                    },
-                    0x7 => { // ROR X
-                        unimplemented!();
-                    },
-                    0x8 => { // STX
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // LDX
-                        unimplemented!();
-                    },
-                    0xB => { // LDX Y
-                        unimplemented!();
-                    },
-                    0xC => { // DEC
-                        unimplemented!();
-                    },
-                    0xD => { // DEC X
-                        unimplemented!();
-                    },
-                    0xE => { // INC
-                        unimplemented!();
-                    },
-                    0xF => { // INC X
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            0xF => {
-                match high_nibble(instr) {
-                    0x0 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x1 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x2 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x3 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x4 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x5 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x6 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x7 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x8 => { // Illegal
-                        unimplemented!();
-                    },
-                    0x9 => { // Illegal
-                        unimplemented!();
-                    },
-                    0xA => { // Illegal
-                        unimplemented!();
-                    },
-                    0xB => { // Illegal
-                        unimplemented!();
-                    },
-                    0xC => { // Illegal
-                        unimplemented!();
-                    },
-                    0xD => { // Illegal
-                        unimplemented!();
-                    },
-                    0xE => { // Illegal
-                        unimplemented!();
-                    },
-                    0xF => { // Illegal
-                        unimplemented!();
-                    },
-                    _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
-
-                }
-            },
-            _ => panic!("Error: low_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+            }
+            _ => unimplemented!(),
         }
+
+
+
+
+        // operation itself
+        match instr.cc() {
+            0 => { // Lots of special instructions
+                match instr.aaa() {
+                    0 => {
+                        match instr.bbb() {
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                            
+                        }
+                    },
+                    1 => {
+                        match instr.bbb() {
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            1 | 3 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    2 => {
+                        match instr.bbb() {
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    3 => {
+                        match instr.bbb() {
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    4 => {
+                        match instr.bbb() {
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            1 | 3 | 5 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    5 => {
+                        match instr.bbb() {
+                            0 | 1 | 3 | 5 | 7 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    6 => {
+                        match instr.bbb() {
+                            0 | 1 | 3 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    7 => {
+                        match instr.bbb() {
+                            0 | 1 | 3 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            0 => { // INSTR_HERE
+                                unimplemented!()
+                            },
+                            _ => unimplemented!(), // Illegal
+                        }
+                    },
+                    _ => panic!("Error: word::aaa() gave a number greater than 7")
+                }
+            },
+
+
+            1 => {
+                match instr.aaa() {
+                    0 => { // ORA
+                        self.a = self.or(self.a, operand.unwrap());
+                    },
+                    1 => { // AND
+                        self.and(self.a, operand.unwrap());
+                    },
+                    2 => { // EOR
+                        self.eor(self.a, operand.unwrap());
+                    },
+                    3 => { // ADC
+                        self.add_carry(operand.unwrap());
+                    },
+                    4 => { // STA
+                        self.store(address.unwrap(), self.a);
+                    },
+                    5 => { // LDA
+                        self.a = operand.unwrap();
+                    },
+                    6 => {
+                        self.compare(self.a, operand.unwrap());
+                    },
+                    7 => {
+                        self.sub_carry(operand.unwrap());
+                    },
+                    _ => panic!("Error: word::aaa() gave a number greater than 7")
+                }
+            }
+
+
+
+            2 => {
+                match instr.aaa() {
+                    0 => { // ASL
+                        unimplemented!();
+                    },
+                    1 => { // ROL
+                        unimplemented!();
+                    },
+                    2 => { // LSR
+                        unimplemented!();
+                    },
+                    3 => { // ROR
+                        unimplemented!();
+                    },
+                    4 => {
+                        match instr.bbb() {
+                            1 | 3 | 5 => { // STX
+
+                            },
+                            2 => { // TXA
+                                unimplemented!();
+                            }
+                            6 => { // TXS
+
+                            },
+                            _=> { // Illegal
+                                unimplemented!();
+                            }
+                        }
+                    },
+                    5 => {
+
+                        match instr.bbb() {
+                            0 | 1 | 3 | 5 | 7 => { // LDX
+                                self.x = operand.unwrap();
+                            },
+                            2 => { // TAX (unavoidable)
+                                unimplemented!()
+                            },
+                            6 => { // TSX
+                                unimplemented!()
+                            }
+                            _ => unimplemented!(),
+                        }
+                        
+                    },
+                    6 => {
+                        match instr.bbb() {
+                            1 | 3 | 5 | 7 => { // DEC
+                                unimplemented!();
+                            }
+                            2 => { // DEX
+                                unimplemented!();
+                            }
+                            _ => unimplemented!()  // Illegal
+                        }
+                    },
+                    7 => {
+                        match instr.bbb() {
+                            1 | 3 | 5 | 7 => { // INC
+                                unimplemented!()
+                            },
+                            2 => { // NOP
+                                unimplemented!()
+                            },
+                            _ => unimplemented!() // Illegal
+                        }
+                    }
+                    _ => panic!("Error: word::aaa() gave a number greater than 7")
+                }
+            }
+            _ => unimplemented!(), // Illegal, c == 3 is never used in original 6502
+        }
+        self.pc = self.pc + pc_offset;
     }
+
+    // fn exec(&mut self, instr: word) {
+    //     // Matrix evaluation inspired by https://www.masswerk.at/6502/6502_instruction_set.html
+    //     match low_nibble(instr) {
+    //         0x0 => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // BRK
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // BPL
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // JSR
+    //                     // Push (Next Instruction Address) -1 to stay canoncial with original implementation.
+    //                     // RTS will then go back to that address + 1
+    //                     self.push_doubleword(self.pc + 2u8); 
+    //                     let lo = self.mem.load(self.pc + 1u8);
+    //                     let hi = self.mem.load(self.pc + 2u8);
+    //                     self.pc = doubleword::from_words(hi, lo);
+    //                 },
+    //                 0x3 => { // BMI
+    //                     self.branch_on(self.N());
+    //                 },
+    //                 0x4 => { // RTI
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // BVC
+    //                     self.branch_on(!self.V());
+    //                 },
+    //                 0x6 => { // RTS
+    //                     self.pc = self.pull_doubleword();
+    //                     self.advance_pc_1();
+    //                 },
+    //                 0x7 => { // BVS
+    //                     self.branch_on(self.V());
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // BCC
+    //                     self.branch_on(!self.C());
+    //                 },
+    //                 0xA => { // LDY #
+    //                     let addr = self.load(self.pc + 1u8);
+    //                     self.y = self.load(addr.as_doubleword());
+    //                 },
+    //                 0xB => { // BCS
+    //                     self.branch_on(self.C());
+    //                 },
+    //                 0xC => { // CPY #
+    //                     let rhs = self.load(self.pc + 1u8);
+    //                     self.compare(self.y, rhs);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xD => { // BNE
+    //                     self.branch_on(!self.Z());
+    //                 },
+    //                 0xE => { // CPX #
+    //                     let rhs = self.load(self.pc + 1u8);
+    //                     self.compare(self.x, rhs);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xF => { // BEQ rel
+    //                     self.branch_on(self.Z());
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x1 => { // ind addressing
+    //             // TODO: factor out common code
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ORA X
+    //                     let val = self.indirect_value_x();
+    //                     self.a = self.a | val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x1 => { // ORA Y
+    //                     let val = self.indirect_value_y();
+    //                     self.a = self.a | val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x2 => { // AND X
+    //                     let val = self.indirect_value_x();
+    //                     self.a = self.a & val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x3 => { // AND Y
+    //                     let val = self.indirect_value_y();
+    //                     self.a = self.a & val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x4 => { // EOR X
+    //                     let val = self.indirect_value_x();
+    //                     self.a = self.a ^ val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x5 => { // EOR Y
+    //                     let val = self.indirect_value_y();
+    //                     self.a = self.a ^ val;
+    //                     self.update_flags_zn(self.a);
+    //                 },
+    //                 0x6 => { // ADC X
+    //                     let val = self.indirect_value_x();
+    //                     self.add_carry(val);
+    //                 },
+    //                 0x7 => { // ADC Y
+    //                     let val = self.indirect_value_y();
+    //                     self.add_carry(val);
+    //                 },
+    //                 0x8 => { // STA X
+    //                     let addr = self.indirect_value_x().as_doubleword();
+    //                     self.store(addr, self.a);
+    //                 },
+    //                 0x9 => { // STA Y
+    //                     let addr = self.indirect_value_y().as_doubleword();
+    //                     self.store(addr, self.a);
+    //                 },
+    //                 0xA => { // LDA X
+    //                     let addr = self.indirect_value_x().as_doubleword();
+    //                     self.a = self.load(addr);
+    //                 },
+    //                 0xB => { // LDA Y
+    //                     let addr = self.indirect_value_y().as_doubleword();
+    //                     self.a = self.load(addr);
+    //                 },
+    //                 0xC => { // CMP X
+    //                     let val = self.indirect_value_x();
+    //                     self.compare(self.a, val);
+    //                 },
+    //                 0xD => { // CMP Y
+    //                     let val = self.indirect_value_y();
+    //                     self.compare(self.a, val);
+    //                 },
+    //                 0xE => { // SBC X
+    //                     let addr = self.indirect_value_x();
+    //                     self.sbc(addr);
+    //                 },
+    //                 0xF => { // SBC Y
+    //                     let addr = self.indirect_value_y();
+    //                     self.sbc(addr);
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //             self.advance_pc_2();
+    //         },
+    //         0x2 => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // LDX #
+    //                     self.x = self.immediate_value();
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xB => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x3 => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x4 => { // zpg
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // BIT
+    //                     let val = self.load(self.pc + 1u8);
+    //                     let n_flag = (val & 0b10000000).native_value() != 0;
+    //                     let v_flag = (val & 0b01000000).native_value() != 0;
+    //                     self.update_N(n_flag);
+    //                     self.update_V(v_flag);
+    //                     let and = self.a & val;
+    //                     self.update_Z(and.native_value() == 0);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // STY zpg
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, self.y);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x9 => { // STY zpg X
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, self.y);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xA => { // LDY zpg
+    //                     let addr = self.zeropage_address();
+    //                     self.y = self.load(addr);
+    //                     self.update_flags_zn(self.y);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xB => { // LDY zpg X
+    //                     let val = self.zeropage_value_x();
+    //                     self.y = val;
+    //                     self.update_flags_zn(self.y);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xC => { // CPY zpg
+    //                     let val = self.zeropage_value();
+    //                     self.compare(self.y, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // CPX zpg
+    //                     let val = self.zeropage_value();
+    //                     self.compare(self.x, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x5 => { // zpg
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ORA
+    //                     let val = self.zeropage_value();
+    //                     self.a = self.or(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x1 => { // ORA X
+    //                     let val = self.zeropage_value_x();
+    //                     self.a = self.or(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x2 => { // AND
+    //                     let val = self.zeropage_value();
+    //                     self.a = self.and(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x3 => { // AND X
+    //                     let addr = self.zeropage_value_x();
+    //                     self.a = self.and(self.a, addr);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x4 => { // EOR
+    //                     let val = self.zeropage_value();
+    //                     self.a = self.eor(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x5 => { // EOR X
+    //                     let val = self.zeropage_value_x();
+    //                     self.a = self.eor(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x6 => { // ADC
+    //                     let val = self.zeropage_value();
+    //                     self.a = self.add_carry(val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x7 => { // ADC X
+    //                     let val = self.zeropage_value_x();
+    //                     self.a = self.add_carry(val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x8 => { // STA
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, self.a);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x9 => { // STA X
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, self.a);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xA => { // LDA
+    //                     let val = self.zeropage_value();
+    //                     self.a = val;
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xB => { // LDA X
+    //                     let val = self.zeropage_value_x();
+    //                     self.a = val;
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xC => { // CMP
+    //                     let val = self.zeropage_value();
+    //                     self.compare(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xD => { // CMP X
+    //                     let val = self.zeropage_value_x();
+    //                     self.compare(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xE => { // SBC
+    //                     let val = self.zeropage_value();
+    //                     self.a = self.sub_carry(val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0xF => { // SBC X
+    //                     let val = self.zeropage_value_x();
+    //                     self.a = self.sub_carry(val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x6 => { // zpg
+    //             // TODO: factor out common code here(e.g. self.zeropage_value())
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ASL
+    //                     let zpg = self.zeropage_value();
+    //                     let new_val = self.asl(zpg);
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x1 => { // ASL X
+    //                     let zpg = self.zeropage_value_x();
+    //                     let new_val = self.asl(zpg);
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x2 => { // ROL
+    //                     let zpg = self.zeropage_value();
+    //                     let new_val = self.rol(zpg);
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x3 => { // ROL X
+    //                     let zpg = self.zeropage_value_x();
+    //                     let new_val = self.rol(zpg);
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x4 => { // LSR
+    //                     let zpg = self.zeropage_value();
+    //                     let new_val = self.lsr(zpg);
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x5 => { // LSR X
+    //                     let zpg = self.zeropage_value_x();
+    //                     let new_val = self.lsr(zpg);
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x6 => { // ROR
+    //                     let zpg = self.zeropage_value();
+    //                     let new_val = self.ror(zpg);
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x7 => { // ROR X
+    //                     let zpg = self.zeropage_value_x();
+    //                     let new_val = self.ror(zpg);
+    //                     let addr = self.zeropage_address_x();
+    //                     self.store(addr, new_val);
+    //                 },
+    //                 0x8 => { // STX
+    //                     let addr = self.zeropage_address();
+    //                     self.store(addr, self.x);
+    //                 },
+    //                 0x9 => { // STX Y
+    //                     let addr = self.zeropage_address_y();
+    //                     self.store(addr, self.x);
+    //                 },
+    //                 0xA => { // LDX
+    //                     self.x = self.zeropage_value();
+    //                 },
+    //                 0xB => { // LDX Y
+    //                     self.x = self.zeropage_value_y();
+    //                 },
+    //                 0xC => { // DEC
+    //                     let addr = self.zeropage_address();
+    //                     let val = self.zeropage_value();
+    //                     self.store(addr, val - 1);
+    //                 },
+    //                 0xD => { // DEC X
+    //                     let addr = self.zeropage_address_x();
+    //                     let val = self.zeropage_value_x();
+    //                     self.store(addr, val - 1);
+    //                 },
+    //                 0xE => { // INC
+    //                     let addr = self.zeropage_address();
+    //                     let val = self.zeropage_value();
+    //                     self.store(addr, val + 1);
+    //                 },
+    //                 0xF => { // INC X
+    //                     let addr = self.zeropage_address_x();
+    //                     let val = self.zeropage_value_x();
+    //                     self.store(addr, val + 1);
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x7 => { // ALL ILLEGAL
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x8 => { // impl
+    //             match high_nibble(instr) {
+    //                 0x0 => { // PHP
+    //                     self.push_word(self.p);
+    //                 },
+    //                 0x1 => { // CLC
+    //                     self.clear_C();
+    //                 },
+    //                 0x2 => { // PLP
+    //                     self.p = self.pull_word();
+    //                 },
+    //                 0x3 => { // SEC
+    //                     self.set_C();
+    //                 },
+    //                 0x4 => { // PHA
+    //                     self.push_word(self.a);
+    //                 },
+    //                 0x5 => { // CLI
+    //                     self.clear_I();
+    //                 },
+    //                 0x6 => { // PLA
+    //                     self.a = self.pull_word();
+    //                 },
+    //                 0x7 => { // SEI
+    //                     self.set_I();
+    //                 },
+    //                 0x8 => { // DEY
+    //                     self.y = self.y - 1;
+    //                 },
+    //                 0x9 => { // TYA
+    //                     self.a = self.y;
+    //                 },
+    //                 0xA => { // TAY
+    //                     self.y = self.a;
+    //                 },
+    //                 0xB => { // CLV
+    //                     self.clear_V()
+    //                 },
+    //                 0xC => { // INY
+    //                     self.y = self.y + 1;
+    //                 },
+    //                 0xD => { // CLD
+    //                     // Unused on NES
+    //                 },
+    //                 0xE => { // INX
+    //                     self.x = self.x + 1;
+    //                 },
+    //                 0xF => { // SED
+    //                     // Unused on NES
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0x9 => { // abs
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ORA #
+    //                     let val = self.immediate_value();
+    //                     self.a = self.or(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x1 => { // ORA Y
+    //                     self.a = self.or(self.a, self.y);
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // AND #
+    //                     let val = self.immediate_value();
+    //                     self.a = self.and(self.a, val);
+    //                     self.advance_pc_2();
+    //                 },
+    //                 0x3 => { // AND Y
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // EOR #
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // EOR Y
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // ADC #
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // ADC Y
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // STA Y
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // LDA #
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // LDA Y
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // CMP #
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // CMP Y
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // SBS #
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // SBS Y
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xA => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ASL A
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // ROL A
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // LSR A
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // ROR A
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // TXA
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // TXS
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // TAX
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // TSX
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // DEX
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // NOP
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xB => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xC => { // abs
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // BIT
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // JMP
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // JMP ind
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // STY
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // LDY
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // LDY X
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // CPY
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // CPX
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xD => { // abs
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ORA
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // ORA X
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // AND
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // AND X
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // EOR
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // EOR X
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // ADC
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // ADC X
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // STA
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // STA X
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // LDA
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // LDA X
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // CMP
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { //  CMP X
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // SBC
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // SBC X
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xE => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // ASL
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // ASL X
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // ROL
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // ROL X
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // LSR
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // LSR X
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // ROR
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // ROR X
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // STX
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // LDX
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // LDX Y
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // DEC
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // DEC X
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // INC
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // INC X
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         0xF => {
+    //             match high_nibble(instr) {
+    //                 0x0 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x1 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x2 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x3 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x4 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x5 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x6 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x7 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x8 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0x9 => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xA => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xB => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xC => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xD => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xE => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 0xF => { // Illegal
+    //                     unimplemented!();
+    //                 },
+    //                 _ => panic!("Error: high_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+
+    //             }
+    //         },
+    //         _ => panic!("Error: low_nibble() failed to convert to single hexadecimal number (i.e.) <= 0xF"),
+    //     }
+    // }
 
     
 }
