@@ -182,13 +182,13 @@ impl Ram {
     }
 
     fn write(&mut self, address: doubleword, data: word) {
-        let address: u16 = address.native_value();
+        let address: u16 = address.host_native_value();
         debug_assert!(address <= 0x07ff);
         self.data[address as usize] = data;
     }
 
     fn read(&self, address: doubleword) -> word {
-        debug_assert!(address.native_value() <= 0x07ff);
+        debug_assert!(address.host_native_value() <= 0x07ff);
         self.data[address.as_addr()]
     }
 
@@ -229,12 +229,12 @@ enum MemoryAccessType {
 #[inline]
 fn low_nibble(byte: word) -> u8 {
     //no need to worry about endianness since it's a single byte
-    byte.native_value() & 0x0f
+    byte.host_native_value() & 0x0f
 }
 
 #[inline]
 fn high_nibble(byte: word) -> u8 {
-    (byte.native_value() & 0xf0) >> 4
+    (byte.host_native_value() & 0xf0) >> 4
 }
 
 /// Generic representation of the IO part of a system connected to a 6502 CPU
@@ -293,10 +293,10 @@ impl IO6502 for FamicomMemory {
 
 impl FamicomMemory {
     fn access(&mut self, address: doubleword, tpe: MemoryAccessType, data: Option<word>) -> Option<word> {
-        let addr = address.native_value();
+        let addr = address.host_native_value();
         match addr {
             0x0000..=0x1FFF => {
-                let real_address = address.native_value() % 0x800; // Clamp mirrored RAM addresses to the real ones
+                let real_address = address.host_native_value() % 0x800; // Clamp mirrored RAM addresses to the real ones
                 match tpe {
                     MemoryAccessType::Load => Some(self.internal_ram.read(doubleword::from(real_address))),
                     MemoryAccessType::Store => {
@@ -333,13 +333,13 @@ struct System<T: IO6502> {
     mem: T,
 }
 
-const C_BIT: u8 = (1 << 0);
-const Z_BIT: u8 = (1 << 1);
-const I_BIT: u8 = (1 << 2);
-const D_BIT: u8 = (1 << 3);
-const B_BIT: u8 = (1 << 4);
-const V_BIT: u8 = (1 << 6);
-const N_BIT: u8 = (1 << 7);
+const C_BIT: u8 = 1 << 0;
+const Z_BIT: u8 = 1 << 1;
+const I_BIT: u8 = 1 << 2;
+const D_BIT: u8 = 1 << 3;
+const B_BIT: u8 = 1 << 4;
+const V_BIT: u8 = 1 << 6;
+const N_BIT: u8 = 1 << 7;
 
 enum AddSubMode {
     Add,
@@ -408,7 +408,7 @@ impl<T: IO6502> System<T> {
 
     #[inline]
     fn illegal_op(instr: word) {
-        panic!("Error: illegal opcode {}", instr.cpu_value());
+        panic!("Error: illegal opcode {}", instr.cpu_endian_value());
     }
 
     #[inline]
@@ -423,7 +423,7 @@ impl<T: IO6502> System<T> {
 
     /// Load from memory, intepreting the value as a signed 16-bit address offset
     fn load_offset(&mut self, address: doubleword) -> i16 {
-        self.mem.load(address).native_value() as i16
+        self.mem.load(address).host_native_value() as i16
 
     }
 
@@ -501,19 +501,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn C(&self) -> bool {
-        (self.p.native_value() & C_BIT) == C_BIT
+        (self.p.host_native_value() & C_BIT) == C_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_C(&mut self) {
-        self.p = word::from(self.p.native_value() | C_BIT);
+        self.p = word::from(self.p.host_native_value() | C_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_C(&mut self) {
-        self.p = word::from(self.p.native_value() & !C_BIT);
+        self.p = word::from(self.p.host_native_value() & !C_BIT);
     }
 
     #[inline]
@@ -528,19 +528,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn Z(&self) -> bool {
-        (self.p.native_value() & Z_BIT) == Z_BIT
+        (self.p.host_native_value() & Z_BIT) == Z_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_Z(&mut self) {
-        self.p = word::from(self.p.native_value() | Z_BIT);
+        self.p = word::from(self.p.host_native_value() | Z_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_Z(&mut self) {
-        self.p = word::from(self.p.native_value() & !Z_BIT);
+        self.p = word::from(self.p.host_native_value() & !Z_BIT);
     }
 
     #[inline]
@@ -555,19 +555,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn I(&self) -> bool {
-        (self.p.native_value() & I_BIT) == I_BIT
+        (self.p.host_native_value() & I_BIT) == I_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_I(&mut self) {
-        self.p = word::from(self.p.native_value() | I_BIT);
+        self.p = word::from(self.p.host_native_value() | I_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_I(&mut self) {
-        self.p = word::from(self.p.native_value() & !I_BIT);
+        self.p = word::from(self.p.host_native_value() & !I_BIT);
     }
 
     #[inline]
@@ -582,19 +582,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn D(&self) -> bool {
-        (self.p.native_value() & D_BIT) == D_BIT
+        (self.p.host_native_value() & D_BIT) == D_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_D(&mut self) {
-        self.p = word::from(self.p.native_value() | D_BIT);
+        self.p = word::from(self.p.host_native_value() | D_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_D(&mut self) {
-        self.p = word::from(self.p.native_value() & !D_BIT);
+        self.p = word::from(self.p.host_native_value() & !D_BIT);
     }
 
     #[inline]
@@ -609,19 +609,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn B(&self) -> bool {
-        (self.p.native_value() & B_BIT) == B_BIT
+        (self.p.host_native_value() & B_BIT) == B_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_B(&mut self) {
-        self.p = word::from(self.p.native_value() | B_BIT);
+        self.p = word::from(self.p.host_native_value() | B_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_B(&mut self) {
-        self.p = word::from(self.p.native_value() & !B_BIT);
+        self.p = word::from(self.p.host_native_value() & !B_BIT);
     }
 
     #[inline]
@@ -636,19 +636,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn V(&self) -> bool {
-        (self.p.native_value() & V_BIT) == V_BIT
+        (self.p.host_native_value() & V_BIT) == V_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_V(&mut self) {
-        self.p = word::from(self.p.native_value() | V_BIT);
+        self.p = word::from(self.p.host_native_value() | V_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_V(&mut self) {
-        self.p = word::from(self.p.native_value() & !V_BIT);
+        self.p = word::from(self.p.host_native_value() & !V_BIT);
     }
 
     #[inline]
@@ -663,19 +663,19 @@ impl<T: IO6502> System<T> {
     #[inline]
     #[allow(non_snake_case)]
     fn N(&self) -> bool {
-        (self.p.native_value() & N_BIT) == N_BIT
+        (self.p.host_native_value() & N_BIT) == N_BIT
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn set_N(&mut self) {
-        self.p = word::from(self.p.native_value() | N_BIT);
+        self.p = word::from(self.p.host_native_value() | N_BIT);
     }
 
     #[inline]
     #[allow(non_snake_case)]
     fn clear_N(&mut self) {
-        self.p = word::from(self.p.native_value() & !N_BIT);
+        self.p = word::from(self.p.host_native_value() & !N_BIT);
     }
 
     #[inline]
@@ -784,7 +784,7 @@ impl<T: IO6502> System<T> {
     #[inline]
     fn update_flags_zn(&mut self, val: word) {
 
-        let val = val.native_value_signed();
+        let val = val.host_native_value_signed();
 
         if val < 0 {
             self.clear_Z();
@@ -822,7 +822,7 @@ impl<T: IO6502> System<T> {
     /// Performs the 6502 compare operation: a substraction folowed by the updates of N, Z and C flags
     fn compare(&mut self, lhs: word, rhs: word) {
         // TODO: check if this correct, Flag behaviour is not clear yet
-        let (res, did_overflow) = lhs.native_value().overflowing_sub(rhs.native_value());
+        let (res, did_overflow) = lhs.host_native_value().overflowing_sub(rhs.host_native_value());
 
         self.update_V(did_overflow);
         self.update_flags_zn(word::from(res));
@@ -861,8 +861,8 @@ impl<T: IO6502> System<T> {
     /// Convencience function for all carry-type ops
     fn op_carry(&mut self, val: word, mode: AddSubMode) -> word {
         let c = self.C() as i16;
-        let m = val.native_value_signed() as i16;
-        let a = self.a.native_value_signed() as i16;
+        let m = val.host_native_value_signed() as i16;
+        let a = self.a.host_native_value_signed() as i16;
 
         let (res, did_overflow) = match mode {
             AddSubMode::Add => c.overflowing_add(m),

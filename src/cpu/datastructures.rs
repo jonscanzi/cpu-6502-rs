@@ -6,7 +6,27 @@ use std::ops::BitXor;
 use std::ops::Shl;
 use std::ops::Shr;
 
-pub const CARRY_BIT: i16 = (1 << 8);
+pub const CARRY_BIT: i16 = 1 << 8;
+
+#[cfg(test)]
+mod datastructure_tests {
+    use super::*;
+
+    #[test]
+    fn tests_endianness() {
+        // 16 bit value is supposed to be 0x1234
+        let big_endian_value = [word::from(0x12_u8), word::from(0x34_u8)];
+        let little_endian_value = [word::from(0x34_u8), word::from(0x12_u8)];
+
+        let test_dw_be  = doubleword::from_words(big_endian_value[0], big_endian_value[1]);
+        let recovered_be_words = test_dw_be.cpu_endian_value();
+        assert_eq!(recovered_be_words, 0x1234);
+
+        let test_dw_le  = doubleword::from_words(little_endian_value[1], little_endian_value[0]);
+        let recovered_le_words = test_dw_be.cpu_endian_value();
+        assert_eq!(recovered_le_words, 0x1234);
+    }
+}
 
 /// Trait that represents the act of appending (opposed to prepending) some data into a structure
 pub trait Push<O: Sized> {
@@ -148,22 +168,22 @@ impl word {
     }
 
     #[inline]
-    pub fn native_value(&self) -> u8 {
+    pub fn host_native_value(&self) -> u8 {
         self.value
     }
 
     #[inline]
-    pub fn native_value_signed(&self) -> i8 {
+    pub fn host_native_value_signed(&self) -> i8 {
         self.value as i8
     }
 
     #[inline]
-    pub fn cpu_value(&self) -> u8 {
+    pub fn cpu_endian_value(&self) -> u8 {
         u8::to_le(self.value)
     }
 
     #[inline]
-    pub fn cpu_value_signed(&self) -> i8 {
+    pub fn cpu_endian_value_signed(&self) -> i8 {
         i8::to_le(self.value as i8)
     }
 
@@ -258,26 +278,26 @@ impl word {
 
     pub fn update_aaa(&mut self, byte: u8) {
         debug_assert!(byte <= 0b111u8, "Assembler: trying to update aaa with a value more than 3 bits");
-        let val = self.native_value();
+        let val = self.host_native_value();
         self.value = (byte << 5u8) | (val & 0b00011111u8);
     }
 
     // FIXME: implement it
     pub fn update_bbb(&mut self, byte: u8) {
         debug_assert!(byte <= 0b111u8, "Assembler: trying to update bbb with a value more than 3 bits");
-        let val = self.native_value();
+        let val = self.host_native_value();
         self.value = (byte << 2u8) | (val & 0b11100011u8);
     }
 
     // FIXME: implement it
     pub fn update_cc(&mut self, byte: u8) {
         debug_assert!(byte <= 0b11u8, "Assembler: trying to update cc with a value more than 3 bits");
-        let val = self.native_value();
+        let val = self.host_native_value();
         self.value = byte | (val & 0b11111100u8);
     }
 
     pub fn as_i16(self) -> i16 {
-        self.native_value() as i16
+        self.host_native_value() as i16
     }
 }
 
@@ -469,7 +489,7 @@ impl PartialEq<u8> for word {
 }
 
 /// Represents a doubleword in 6502 (used for addressing and the PC)
-/// Currently stored in native endianness
+/// Stored in native endianness, can be presented as CPU endianness
 #[derive(Clone, Copy, Debug)]
 #[allow(non_camel_case_types)]
 pub struct doubleword {
@@ -488,23 +508,23 @@ impl doubleword {
     }
 
     #[inline]
-    pub fn native_value(&self) -> u16 {
+    pub fn host_native_value(&self) -> u16 {
         self.value
     }
 
     #[inline]
-    pub fn cpu_value(&self) -> u16 {
+    pub fn cpu_endian_value(&self) -> u16 {
         u16::to_le(self.value)
     }
 
     #[inline]
     pub fn as_addr(&self) -> usize {
-        self.native_value() as usize
+        self.host_native_value() as usize
     }
 
     pub fn from_words(hi: word, lo: word) -> Self {
         Self {
-            value: u16::from_le_bytes([lo.native_value(), hi.native_value()]),
+            value: u16::from_le_bytes([lo.host_native_value(), hi.host_native_value()]),
         }
     }
 
@@ -520,8 +540,16 @@ impl doubleword {
     }
 
     pub fn as_i16(self) -> i16 {
-        self.native_value() as i16
+        self.host_native_value() as i16
     }
+
+    // pub fn update_high_byte(&mut self, byte: word) {
+    //     todo!()
+    // }
+
+    // pub fn get_low_byte(&self) -> word {
+    //     self.to_words()[]
+    // }
 }
 
 impl ClAdd<Self> for doubleword {

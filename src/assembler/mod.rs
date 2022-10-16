@@ -20,7 +20,7 @@ impl fmt::Display for InstructionStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut acc_string = String::with_capacity(self.stream.len() * 3);
         for byte in &self.stream {
-            acc_string.push_str(&format!("{:X?}\n", byte.native_value()));
+            acc_string.push_str(&format!("{:X?}\n", byte.host_native_value()));
         }
         write!(f, "{}", acc_string)
     }
